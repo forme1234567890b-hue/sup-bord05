@@ -20,7 +20,7 @@ const CONFIG = {
   
   // WhatsApp Cloud API  
   WA_PHONE_ID: "",          // ← получите ниже
-  WA_TOKEN: "mytoken",             // ← тот же что PAGE_ACCESS_TOKEN
+  WA_TOKEN: "",             // ← тот же что PAGE_ACCESS_TOKEN
   
   // Telegram уведомления
   TG_TOKEN: "8878884686:AAGmS94pp2nhkQrHj8hkx8LIbBRmtdn92Xk",             // ← токен от @BotFather
