@@ -23,8 +23,8 @@ const CONFIG = {
   WA_TOKEN: "",             // ← тот же что PAGE_ACCESS_TOKEN
   
   // Telegram уведомления
-  TG_TOKEN: "",             // ← токен от @BotFather
-  TG_CHAT_ID: "",           // ← ваш Chat ID
+  TG_TOKEN: "8878884686:AAGmS94pp2nhkQrHj8hkx8LIbBRmtdn92Xk",             // ← токен от @BotFather
+  TG_CHAT_ID: "5208172896",           // ← ваш Chat ID
   
   // Ваши данные
   PHONE: "89051160860",
