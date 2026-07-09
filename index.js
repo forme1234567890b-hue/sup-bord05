@@ -610,7 +610,6 @@ async function stepConfirm({ channel, userId, low, s }) {
   }
   return await sendMsg(channel, userId, "Ответьте: Да или Нет");
 }
-
 async function handleReceiptPhoto({ channel, userId }) {
   const s = sessions[userId];
   if (!s || s.step !== "wait_receipt") return;
@@ -624,7 +623,7 @@ async function handleReceiptPhoto({ channel, userId }) {
     + "Досок: " + s.count + "\n"
     + "Сумма: " + s.total + " руб\n\n"
     + "/confirm_" + s.bookingId + "\n"
-    + "/cancel_    + "/cancel_" + s.bookingId
+    + "/cancel_" + s.bookingId
   );
   s.step = "waiting_confirm";
   return await sendMsg(channel, userId,
