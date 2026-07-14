@@ -455,21 +455,20 @@ async function startWhatsApp() {
           const isUser = jid.endsWith("@s.whatsapp.net");
           if (!isLid && !isUser) continue;
 
-          let userId = jid;
-                   let userId = jid;
+          let waUserId = jid;
           if (isLid) {
             try {
               const realJid = await waSocket.onWhatsApp(jid);
               if (realJid && realJid[0] && realJid[0].jid) {
-                userId = realJid[0].jid;
+                                waUserId = realJid[0].jid;
               }
             } catch (e) {
-              userId = jid;
+              waUserId = jid;
             }
           }
 
           if (msg.message?.imageMessage || msg.message?.documentMessage || msg.message?.documentWithCaptionMessage) {
-            await handleReceiptPhoto({ channel: "wa", userId });
+            await handleReceiptPhoto({ channel: "wa", userId: waUserId });
             continue;
           }
 
@@ -480,7 +479,7 @@ async function startWhatsApp() {
             msg.message?.listResponseMessage?.title || "";
 
           if (text && text.trim().length > 0) {
-            await handleMessage({ channel: "wa", userId, text: text.trim() });
+            await handleMessage({ channel: "wa", userId: waUserId, text: text.trim() });
           }
         }
       } catch (err) {
