@@ -1,3 +1,4 @@
+cat > /app/index.js << 'ENDOFFILE'
 import express from "express";
 import axios from "axios";
 import qrcode from "qrcode";
@@ -111,8 +112,10 @@ async function notifyTelegram(text) {
 
 async function sendWA(userId, text) {
   try {
-    if (!waSocket) return;
+    if (!waSocket) { console.error("waSocket не готов"); return; }
+    console.log("Отправляю на:", userId, "текст:", text.substring(0,50));
     await waSocket.sendMessage(userId, { text: text });
+    console.log("Отправлено успешно!");
   } catch (err) {
     console.error("WA send error:", err.message);
   }
@@ -396,84 +399,78 @@ async function stepConfirm({ channel, userId, low, s }) {
 async function handleReceiptPhoto({ channel, userId }) {
   const s = sessions[userId];
   if (!s || s.step !== "wait_receipt") return;
-  const info = CONFIG.PRICES[s.duration];
   const grp = CONFIG.GROUPS[s.group];
   await notifyTelegram("ЧЕК ПОЛУЧЕН!\n\nID: " + s.bookingId + "\nДата: " + formatDate(s.date) + "\nВремя: " + grp.label + "\nДосок: " + s.count + "\nСумма: " + s.total + " руб\n\n/confirm_" + s.bookingId + "\n/cancel_" + s.bookingId);
   s.step = "waiting_confirm";
   if (sessionTimers[userId]) { clearTimeout(sessionTimers[userId]); delete sessionTimers[userId]; }
   return await sendMsg(channel, userId, "Чек получен!\n\nБронь за вами закреплена!\n\nОплату проверит " + CONFIG.INSTRUCTOR + "\nПо всем вопросам: " + CONFIG.PHONE);
 }
+ENDOFFILEcat >> /app/index.js << 'ENDOFFILE'
 
 async function startWhatsApp() {
   try {
-    const { state, saveCreds } = await useMultiFileAuthState("auth_info_business");
+    const { state, saveCreds } = await useMultiFileAuthState("/app/auth_info_business");
     const { version } = await fetchLatestBaileysVersion();
+
     waSocket = makeWASocket({
       version,
       auth: state,
+      printQRInTerminal: false,
       logger: pino({ level: "silent" }),
       browser: ["SUP Bot", "Chrome", "1.0.0"],
-      getMessage: async () => ({ conversation: "" }),
-    });
-
-    waSocket.ev.on("connection.update", async (update) => {
-      const { connection, lastDisconnect, qr } = update;
-      if (qr) {
-        lastQR = qr;
-        console.log("QR готов! Зайди на /qr");
-      }
-      if (connection === "close") {
-        lastQR = null;
-        const code = new Boom(lastDisconnect?.error)?.output?.statusCode;
-        console.log("Соединение закрыто, код:", code);
-        if (code !== DisconnectReason.loggedOut) {
-          console.log("Переподключение через 3 сек...");
-          setTimeout(startWhatsApp, 3000);
-        } else {
-          console.log("Вышли из аккаунта. Удали папку auth_info_business");
-        }
-      }
-      if (connection === "open") {
-        lastQR = null;
-        console.log("WhatsApp подключён!");
-        await notifyTelegram("WhatsApp бот подключён и работает!");
-      }
     });
 
     waSocket.ev.on("creds.update", saveCreds);
 
-    waSocket.ev.on("messages.upsert", async (m) => {
+    waSocket.ev.on("connection.update", async ({ connection, lastDisconnect, qr }) => {
+      if (qr) {
+        lastQR = qr;
+        console.log("QR готов! Зайди на /qr");
+      }
+      if (connection === "open") {
+        lastQR = null;
+        console.log("WhatsApp подключён!");
+        await notifyTelegram("WhatsApp подключён и готов!");
+      }
+      if (connection === "close") {
+        const code = new Boom(lastDisconnect?.error)?.output?.statusCode;
+        console.log("Соединение закрыто, код:", code);
+        if (code === DisconnectReason.loggedOut) {
+          console.log("Разлогинен! Удали /app/auth_info_business и перезапусти.");
+          await notifyTelegram("WhatsApp разлогинен! Нужно заново сканировать QR.");
+        } else {
+          console.log("Переподключение через 3 сек...");
+          setTimeout(startWhatsApp, 3000);
+        }
+      }
+    });
+
+    waSocket.ev.on("messages.upsert", async ({ messages, type }) => {
       try {
-        console.log("Получено событие messages.upsert, тип:", m.type);
-        if (!m.messages || m.type !== "notify") return;
-        for (const msg of m.messages) {
-          if (msg.key.fromMe) continue;
-          const jid = msg.key.remoteJid || "";
-          console.log("Сообщение от JID:", jid);
-          if (jid.endsWith("@g.us")) continue;
-          if (jid === "status@broadcast") continue;
+        console.log("Получено событие messages.upsert, тип:", type);
+        if (type !== "notify") return;
+
+        for (const msg of messages) {
           if (!msg.message) continue;
-          if (msg.message?.protocolMessage) continue;
-          if (msg.message?.senderKeyDistributionMessage) continue;
-                    if (msg.message?.reactionMessage) continue;
+          if (msg.key.fromMe) continue;
+
+          const jid = msg.key.remoteJid;
+          if (!jid) continue;
+          if (msg.message?.reactionMessage) continue;
 
           const isLid = jid.endsWith("@lid");
           const isUser = jid.endsWith("@s.whatsapp.net");
           if (!isLid && !isUser) continue;
 
-          let waUserId = jid;
-          if (isLid) {
-            try {
-              const realJid = await waSocket.onWhatsApp(jid);
-              if (realJid && realJid[0] && realJid[0].jid) {
-                waUserId = realJid[0].jid;
-              }
-            } catch (e) {
-              waUserId = jid;
-            }
-          }
+          const waUserId = jid;
 
-          if (msg.message?.imageMessage || msg.message?.documentMessage || msg.message?.documentWithCaptionMessage) {
+          console.log("Сообщение от JID:", waUserId);
+
+          if (
+            msg.message?.imageMessage ||
+            msg.message?.documentMessage ||
+            msg.message?.documentWithCaptionMessage
+          ) {
             console.log("Фото получено от:", waUserId);
             await handleReceiptPhoto({ channel: "wa", userId: waUserId });
             continue;
@@ -483,7 +480,8 @@ async function startWhatsApp() {
             msg.message?.conversation ||
             msg.message?.extendedTextMessage?.text ||
             msg.message?.buttonsResponseMessage?.selectedDisplayText ||
-            msg.message?.listResponseMessage?.title || "";
+            msg.message?.listResponseMessage?.title ||
+            "";
 
           console.log("Текст от", waUserId, ":", text);
 
@@ -508,3 +506,4 @@ app.listen(PORT, async () => {
   await notifyTelegram("Сервер запущен! Бот готов к работе.");
   startWhatsApp();
 });
+ENDOFFILE
