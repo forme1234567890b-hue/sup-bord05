@@ -1,4 +1,3 @@
-cat > /app/index.js << 'EOF'
 import express from "express";
 import axios from "axios";
 import qrcode from "qrcode";
@@ -143,7 +142,6 @@ function resetTimer(userId) {
     }
   }, CONFIG.SESSION_TIMEOUT);
 }
-EOFcat >> /app/index.js << 'EOF'
 
 app.get("/", (req, res) => {
   res.send("<html><body><h1>SUP Board Bot</h1><p>Работает!</p><a href='/qr'>QR WhatsApp</a></body></html>");
@@ -215,7 +213,6 @@ app.post("/tg_webhook", async (req, res) => {
     res.sendStatus(500);
   }
 });
-EOFcat >> /app/index.js << 'EOF'
 
 async function handleMessage({ channel, userId, text }) {
   try {
@@ -406,7 +403,6 @@ async function handleReceiptPhoto({ channel, userId }) {
   if (sessionTimers[userId]) { clearTimeout(sessionTimers[userId]); delete sessionTimers[userId]; }
   return await sendMsg(channel, userId, "Чек получен!\n\nБронь за вами закреплена!\n\nОплату проверит " + CONFIG.INSTRUCTOR + "\nПо всем вопросам: " + CONFIG.PHONE);
 }
-EOFcat >> /app/index.js << 'EOF'
 
 async function startWhatsApp() {
   try {
@@ -460,6 +456,7 @@ async function startWhatsApp() {
           if (!isLid && !isUser) continue;
 
           let userId = jid;
+                   let userId = jid;
           if (isLid) {
             try {
               const realJid = await waSocket.onWhatsApp(jid);
@@ -503,4 +500,3 @@ app.listen(PORT, async () => {
   await notifyTelegram("Сервер запущен! Бот готов к работе.");
   startWhatsApp();
 });
-EOF
