@@ -28,7 +28,7 @@ const CONFIG = {
     "1.5": { label: "1.5 часа", price: 1000 },
     "2":   { label: "2 часа",   price: 1200 },
   },
-  SESSION_TIMEOUT: 30 * 60 * 1000,
+  SESSION_TIMEOUT: 60 * 60 * 1000,
 };
 
 const bookings        = {};
@@ -48,16 +48,25 @@ const PRICE_WORDS = [
   "прайс","почем","по чем","тариф","стоит аренда",
 ];
 
+// ПРАВКА 1: убрали "ваалейкум ассалам" и похожие из триггеров
+// чтобы бот не отвечал когда человек отвечает на твоё приветствие
 const GREETINGS = [
-  { triggers: ["салам алейкум","السلام عليكم"], response: "Ваалейкум ассалам! 🙏" },
+  { triggers: ["салам алейкум", "السلام عليكم"], response: "Ваалейкум ассалам! 🙏" },
   { triggers: ["السلام","مرحبا","اهلا","أهلا"], response: "وعليكم السلام! 🙏" },
-  { triggers: ["привет","хай","хей","hey"], response: "Привет! 👋" },
-  { triggers: ["здравствуйте","здравствуй"], response: "Здравствуйте! 👋" },
-  { triggers: ["добрый день"], response: "Добрый день! 👋" },
-  { triggers: ["добрый вечер"], response: "Добрый вечер! 👋" },
-  { triggers: ["доброе утро"], response: "Доброе утро! 👋" },
-  { triggers: ["hello","hi"], response: "Hello! 👋" },
-  { triggers: ["салам","salam"], response: "Ваалейкум ассалам! 🙏" },
+  { triggers: ["привет","хай","хей","hey"],      response: "Привет! 👋" },
+  { triggers: ["здравствуйте","здравствуй"],     response: "Здравствуйте! 👋" },
+  { triggers: ["добрый день"],                   response: "Добрый день! 👋" },
+  { triggers: ["добрый вечер"],                  response: "Добрый вечер! 👋" },
+  { triggers: ["доброе утро"],                   response: "Доброе утро! 👋" },
+  { triggers: ["hello","hi"],                    response: "Hello! 👋" },
+  { triggers: ["салам","salam"],                 response: "Ваалейкум ассалам! 🙏" },
+];
+
+// Слова-ответы на приветствие - бот НЕ должен на них реагировать
+const GREETING_REPLIES = [
+  "ваалейкум","вааллейкум","ваалейкум ассалам",
+  "وعليكم","وعليكم السلام",
+  "и тебе привет","и вам","взаимно",
 ];
 
 function getBooked(date, group) {
@@ -154,13 +163,30 @@ async function sendMsg(channel, userId, text) {
   if (channel === "wa") return await sendWA(userId, text);
 }
 
+// ПРАВКА 3: таймаут 1 час - отменяет бронь и освобождает слоты
 function resetTimer(userId) {
   if (sessionTimers[userId]) clearTimeout(sessionTimers[userId]);
   const s = sessions[userId];
   if (!s || s.step === "idle" || s.step === "waiting_confirm") return;
-  sessionTimers[userId] = setTimeout(() => {
+
+  sessionTimers[userId] = setTimeout(async () => {
     const sess = sessions[userId];
     if (sess && sess.step !== "idle" && sess.step !== "waiting_confirm") {
+
+      // Если бронь уже создана - освобождаем слоты
+      if (sess.bookingId && pendingPayments[sess.bookingId]) {
+        const b = pendingPayments[sess.bookingId];
+        if (bookings[b.date] && bookings[b.date][b.group]) {
+          bookings[b.date][b.group] = Math.max(
+            0, bookings[b.date][b.group] - b.count
+          );
+        }
+        delete pendingPayments[sess.bookingId];
+        await notifyTelegram(
+          "Бронь " + sess.bookingId + " отменена автоматически (таймаут 1 час)"
+        );
+      }
+
       sessions[userId] = { step: "idle", channel: sess.channel };
       delete sessionTimers[userId];
       console.log("Сессия сброшена по таймауту: " + userId);
@@ -262,7 +288,9 @@ app.post("/tg_webhook", async (req, res) => {
     console.error("TG webhook error:", err);
     res.sendStatus(500);
   }
-});async function startWhatsApp() {
+});
+
+async function startWhatsApp() {
   try {
     const { state, saveCreds } = await useMultiFileAuthState("auth_info");
     const { version }          = await fetchLatestBaileysVersion();
@@ -299,15 +327,18 @@ app.post("/tg_webhook", async (req, res) => {
       try {
         if (!m.messages) return;
         for (const msg of m.messages) {
+          // ПРАВКА 2: если МЫ написали первыми - бот молчит
           if (msg.key.fromMe) continue;
           if (msg.key.remoteJid.endsWith("@g.us")) continue;
           if (!msg.message) continue;
+
           const userId = msg.key.remoteJid;
           const text =
             msg.message?.conversation ||
             msg.message?.extendedTextMessage?.text ||
             msg.message?.buttonsResponseMessage?.selectedDisplayText ||
             msg.message?.listResponseMessage?.title || "";
+
           if (msg.message?.imageMessage || msg.message?.documentMessage) {
             await handleReceiptPhoto({ channel: "wa", userId });
             continue;
@@ -336,12 +367,12 @@ async function handleMessage({ channel, userId, text }) {
 
     resetTimer(userId);
 
-    if (s.step === "wait_count")       return await stepCount({ channel, userId, low, s });
-    if (s.step === "wait_date")        return await stepDate({ channel, userId, low, s });
-    if (s.step === "wait_group")       return await stepGroup({ channel, userId, low, s });
-    if (s.step === "wait_duration")    return await stepDuration({ channel, userId, low, s });
-    if (s.step === "confirm")          return await stepConfirm({ channel, userId, low, s });
-    if (s.step === "ask_book")         return await stepAskBook({ channel, userId, low, s });
+    if (s.step === "wait_count")    return await stepCount({ channel, userId, low, s });
+    if (s.step === "wait_date")     return await stepDate({ channel, userId, low, s });
+    if (s.step === "wait_group")    return await stepGroup({ channel, userId, low, s });
+    if (s.step === "wait_duration") return await stepDuration({ channel, userId, low, s });
+    if (s.step === "confirm")       return await stepConfirm({ channel, userId, low, s });
+    if (s.step === "ask_book")      return await stepAskBook({ channel, userId, low, s });
 
     if (s.step === "wait_receipt") {
       return await sendMsg(channel, userId,
@@ -354,8 +385,12 @@ async function handleMessage({ channel, userId, text }) {
       );
     }
 
-    const hasSap   = SAP_WORDS.some(w => low.includes(w));
-    const hasPrice = PRICE_WORDS.some(w => low.includes(w));
+    // ПРАВКА 1: если человек отвечает на приветствие - бот молчит
+    const isGreetingReply = GREETING_REPLIES.some(w => low.includes(w));
+    if (isGreetingReply) return;
+
+    const hasSap     = SAP_WORDS.some(w => low.includes(w));
+    const hasPrice   = PRICE_WORDS.some(w => low.includes(w));
     const greetMatch = GREETINGS.find(g => g.triggers.some(t => low.includes(t)));
 
     if (greetMatch) {
@@ -387,9 +422,7 @@ async function handleMessage({ channel, userId, text }) {
   } catch (err) {
     console.error("handleMessage error:", err);
   }
-}
-
-async function stepAskBook({ channel, userId, low, s }) {
+}async function stepAskBook({ channel, userId, low, s }) {
   const yes = ["да","yes","конечно","ок","хорошо","давай","хочу","бронировать"];
   const no  = ["нет","no","не надо","не хочу","отмена"];
 
@@ -537,8 +570,8 @@ async function stepGroup({ channel, userId, low, s }) {
 
 async function stepDuration({ channel, userId, low, s }) {
   let duration = null;
-  if (low === "1" || low.includes("1 час") || low.includes("один час")) duration = "1";
-  if (low === "2" || low.includes("1.5") || low.includes("полтора"))    duration = "1.5";
+  if (low === "1" || low.includes("1 час") || low.includes("один час"))  duration = "1";
+  if (low === "2" || low.includes("1.5")   || low.includes("полтора"))   duration = "1.5";
   if (low === "3" || low.includes("2 часа") || low.includes("два часа")) duration = "2";
   if (!duration) {
     return await sendMsg(channel, userId, "Выберите:\n1 - 1 час\n2 - 1.5 часа\n3 - 2 часа");
@@ -576,11 +609,11 @@ async function stepConfirm({ channel, userId, low, s }) {
     const grp  = CONFIG.GROUPS[s.group];
     pendingPayments[bookingId] = {
       userId, channel,
-      date:     s.date,
-      group:    s.group,
-      count:    s.count,
-      duration: s.duration,
-      total:    s.total,
+      date:      s.date,
+      group:     s.group,
+      count:     s.count,
+      duration:  s.duration,
+      total:     s.total,
       bookingId,
       createdAt: new Date().toISOString(),
     };
@@ -601,7 +634,7 @@ async function stepConfirm({ channel, userId, low, s }) {
       + "Переведите " + s.total + " руб:\n"
       + CONFIG.PHONE + " (Сбербанк / СБП)\n\n"
       + "После оплаты отправьте фото чека.\n"
-      + "Бронь действует 24 часа."
+      + "Бронь действует 1 час."
     );
   }
   if (no.some(w => low.includes(w))) {
@@ -610,6 +643,7 @@ async function stepConfirm({ channel, userId, low, s }) {
   }
   return await sendMsg(channel, userId, "Ответьте: Да или Нет");
 }
+
 async function handleReceiptPhoto({ channel, userId }) {
   const s = sessions[userId];
   if (!s || s.step !== "wait_receipt") return;
@@ -626,6 +660,13 @@ async function handleReceiptPhoto({ channel, userId }) {
     + "/cancel_" + s.bookingId
   );
   s.step = "waiting_confirm";
+
+  // Останавливаем таймер - чек получен, ждём подтверждения админа
+  if (sessionTimers[userId]) {
+    clearTimeout(sessionTimers[userId]);
+    delete sessionTimers[userId];
+  }
+
   return await sendMsg(channel, userId,
     "Чек получен! 📸\n\n"
     + "Бронь за вами закреплена!\n\n"
