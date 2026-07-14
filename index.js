@@ -48,21 +48,18 @@ const PRICE_WORDS = [
   "прайс","почем","по чем","тариф","стоит аренда",
 ];
 
-// ПРАВКА 1: убрали "ваалейкум ассалам" и похожие из триггеров
-// чтобы бот не отвечал когда человек отвечает на твоё приветствие
 const GREETINGS = [
   { triggers: ["салам алейкум", "السلام عليكم"], response: "Ваалейкум ассалам! 🙏" },
-  { triggers: ["السلام","مرحبا","اهلا","أهلا"], response: "وعليكم السلام! 🙏" },
-  { triggers: ["привет","хай","хей","hey"],      response: "Привет! 👋" },
-  { triggers: ["здравствуйте","здравствуй"],     response: "Здравствуйте! 👋" },
-  { triggers: ["добрый день"],                   response: "Добрый день! 👋" },
-  { triggers: ["добрый вечер"],                  response: "Добрый вечер! 👋" },
-  { triggers: ["доброе утро"],                   response: "Доброе утро! 👋" },
-  { triggers: ["hello","hi"],                    response: "Hello! 👋" },
-  { triggers: ["салам","salam"],                 response: "Ваалейкум ассалам! 🙏" },
+  { triggers: ["السلام","مرحبا","اهلا","أهلا"],  response: "وعليكم السلام! 🙏" },
+  { triggers: ["привет","хай","хей","hey"],       response: "Привет! 👋" },
+  { triggers: ["здравствуйте","здравствуй"],      response: "Здравствуйте! 👋" },
+  { triggers: ["добрый день"],                    response: "Добрый день! 👋" },
+  { triggers: ["добрый вечер"],                   response: "Добрый вечер! 👋" },
+  { triggers: ["доброе утро"],                    response: "Доброе утро! 👋" },
+  { triggers: ["hello","hi"],                     response: "Hello! 👋" },
+  { triggers: ["салам","salam"],                  response: "Ваалейкум ассалам! 🙏" },
 ];
 
-// Слова-ответы на приветствие - бот НЕ должен на них реагировать
 const GREETING_REPLIES = [
   "ваалейкум","вааллейкум","ваалейкум ассалам",
   "وعليكم","وعليكم السلام",
@@ -163,7 +160,6 @@ async function sendMsg(channel, userId, text) {
   if (channel === "wa") return await sendWA(userId, text);
 }
 
-// ПРАВКА 3: таймаут 1 час - отменяет бронь и освобождает слоты
 function resetTimer(userId) {
   if (sessionTimers[userId]) clearTimeout(sessionTimers[userId]);
   const s = sessions[userId];
@@ -172,8 +168,6 @@ function resetTimer(userId) {
   sessionTimers[userId] = setTimeout(async () => {
     const sess = sessions[userId];
     if (sess && sess.step !== "idle" && sess.step !== "waiting_confirm") {
-
-      // Если бронь уже создана - освобождаем слоты
       if (sess.bookingId && pendingPayments[sess.bookingId]) {
         const b = pendingPayments[sess.bookingId];
         if (bookings[b.date] && bookings[b.date][b.group]) {
@@ -186,7 +180,6 @@ function resetTimer(userId) {
           "Бронь " + sess.bookingId + " отменена автоматически (таймаут 1 час)"
         );
       }
-
       sessions[userId] = { step: "idle", channel: sess.channel };
       delete sessionTimers[userId];
       console.log("Сессия сброшена по таймауту: " + userId);
@@ -290,34 +283,43 @@ app.post("/tg_webhook", async (req, res) => {
   }
 });
 
+// ✅ ОБНОВЛЕНО ДЛЯ WHATSAPP BUSINESS
 async function startWhatsApp() {
   try {
-    const { state, saveCreds } = await useMultiFileAuthState("auth_info");
+    // Удали старую папку auth_info перед запуском!
+    const { state, saveCreds } = await useMultiFileAuthState("auth_info_business");
     const { version }          = await fetchLatestBaileysVersion();
 
     waSocket = makeWASocket({
       version,
       auth:              state,
       logger:            pino({ level: "silent" }),
-      printQRInTerminal: false,
+      printQRInTerminal: true,
+      browser:           ["SUP Bot", "Chrome", "1.0.0"],
       getMessage:        async () => ({ conversation: "" }),
     });
 
     waSocket.ev.on("connection.update", async (update) => {
       const { connection, lastDisconnect, qr } = update;
-      if (qr) { lastQR = qr; console.log("QR готов!"); }
+      if (qr) {
+        lastQR = qr;
+        console.log("✅ QR готов! Зайди на /qr и отсканируй");
+      }
       if (connection === "close") {
+        lastQR = null;
         const code = new Boom(lastDisconnect?.error)?.output?.statusCode;
+        console.log("❌ Соединение закрыто, код:", code);
         if (code !== DisconnectReason.loggedOut) {
+          console.log("🔄 Переподключение...");
           setTimeout(startWhatsApp, 3000);
         } else {
-          lastQR = null;
+          console.log("🚫 Вышли из аккаунта. Удали папку auth_info_business и перезапусти");
         }
       }
       if (connection === "open") {
         lastQR = null;
-        console.log("WhatsApp подключён!");
-        await notifyTelegram("WhatsApp бот подключён и работает!");
+        console.log("✅ WhatsApp Business подключён!");
+        await notifyTelegram("✅ WhatsApp Business бот подключён и работает!");
       }
     });
 
@@ -326,39 +328,57 @@ async function startWhatsApp() {
     waSocket.ev.on("messages.upsert", async (m) => {
       try {
         if (!m.messages) return;
+        if (m.type !== "notify") return; // ✅ только новые сообщения
+
         for (const msg of m.messages) {
-          // ПРАВКА 2: если МЫ написали первыми - бот молчит
+          console.log("📨 Сообщение:", {
+            fromMe:    msg.key.fromMe,
+            remoteJid: msg.key.remoteJid,
+            type:      Object.keys(msg.message || {})[0],
+            text:      msg.message?.conversation ||
+                       msg.message?.extendedTextMessage?.text || "",
+          });
+
           if (msg.key.fromMe) continue;
           if (msg.key.remoteJid.endsWith("@g.us")) continue;
           if (!msg.message) continue;
+
+          // ✅ Игнорируем протокольные сообщения WA Business
+          if (msg.message?.protocolMessage) continue;
+          if (msg.message?.senderKeyDistributionMessage) continue;
+          if (msg.message?.reactionMessage) continue;
 
           const userId = msg.key.remoteJid;
           const text =
             msg.message?.conversation ||
             msg.message?.extendedTextMessage?.text ||
             msg.message?.buttonsResponseMessage?.selectedDisplayText ||
-            msg.message?.listResponseMessage?.title || "";
+            msg.message?.listResponseMessage?.title ||
+            msg.message?.templateButtonReplyMessage?.selectedDisplayText || "";
 
-          if (msg.message?.imageMessage || msg.message?.documentMessage) {
+          if (
+            msg.message?.imageMessage ||
+            msg.message?.documentMessage ||
+            msg.message?.documentWithCaptionMessage
+          ) {
             await handleReceiptPhoto({ channel: "wa", userId });
             continue;
           }
+
           if (text && text.trim().length > 0) {
             await handleMessage({ channel: "wa", userId, text: text.trim() });
           }
         }
       } catch (err) {
-        console.error("Ошибка WA:", err);
+        console.error("❌ Ошибка WA:", err);
       }
     });
 
   } catch (err) {
-    console.error("Ошибка запуска WA:", err);
+    console.error("❌ Ошибка запуска WA:", err);
     setTimeout(startWhatsApp, 5000);
   }
-}
-
-async function handleMessage({ channel, userId, text }) {
+}async function handleMessage({ channel, userId, text }) {
   try {
     const low = text.toLowerCase().trim();
     if (!sessions[userId]) sessions[userId] = { step: "idle", channel };
@@ -385,7 +405,6 @@ async function handleMessage({ channel, userId, text }) {
       );
     }
 
-    // ПРАВКА 1: если человек отвечает на приветствие - бот молчит
     const isGreetingReply = GREETING_REPLIES.some(w => low.includes(w));
     if (isGreetingReply) return;
 
@@ -422,7 +441,9 @@ async function handleMessage({ channel, userId, text }) {
   } catch (err) {
     console.error("handleMessage error:", err);
   }
-}async function stepAskBook({ channel, userId, low, s }) {
+}
+
+async function stepAskBook({ channel, userId, low, s }) {
   const yes = ["да","yes","конечно","ок","хорошо","давай","хочу","бронировать"];
   const no  = ["нет","no","не надо","не хочу","отмена"];
 
@@ -661,7 +682,6 @@ async function handleReceiptPhoto({ channel, userId }) {
   );
   s.step = "waiting_confirm";
 
-  // Останавливаем таймер - чек получен, ждём подтверждения админа
   if (sessionTimers[userId]) {
     clearTimeout(sessionTimers[userId]);
     delete sessionTimers[userId];
@@ -677,7 +697,7 @@ async function handleReceiptPhoto({ channel, userId }) {
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, async () => {
-  console.log("Сервер запущен на порту " + PORT);
-  await notifyTelegram("Сервер запущен! Бот готов к работе.");
+  console.log("✅ Сервер запущен на порту " + PORT);
+  await notifyTelegram("✅ Сервер запущен! Бот готов к работе.");
   startWhatsApp();
 });
