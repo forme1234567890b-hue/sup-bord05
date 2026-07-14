@@ -1,4 +1,3 @@
-cat > /app/index.js << 'ENDOFFILE'
 import express from "express";
 import axios from "axios";
 import qrcode from "qrcode";
@@ -81,9 +80,9 @@ function formatISO(date) {
 }
 
 function parseDate(text) {
-  const m1 = text.match(/(\d{1,2})[.\-\/](\d{1,2})[.\-\/](\d{4})/);
+  const m1 = text.match(/(\d{1,2})[.\-](\d{1,2})[.\-](\d{4})/);
   if (m1) return m1[3] + "-" + m1[2].padStart(2,"0") + "-" + m1[1].padStart(2,"0");
-  const m2 = text.match(/(\d{1,2})[.\-\/](\d{1,2})/);
+  const m2 = text.match(/(\d{1,2})[.\-](\d{1,2})/);
   if (m2) return new Date().getFullYear() + "-" + m2[2].padStart(2,"0") + "-" + m2[1].padStart(2,"0");
   return null;
 }
@@ -311,7 +310,7 @@ async function askDate(channel, userId) {
 }
 
 async function stepDate({ channel, userId, low, s }) {
-  const hasDate = /\d{1,2}[.\-\/]\d{1,2}/.test(low);
+  const hasDate = /\d{1,2}[.\-]\d{1,2}/.test(low);
   const hasKeyword = low.includes("сегодня") || low.includes("завтра") || low.includes("послезавтра");
   if (!hasDate && !hasKeyword) return await sendMsg(channel, userId, "Не понял дату.\nНапишите: Сегодня, Завтра, Послезавтра или 25.07");
   let date = null;
@@ -445,21 +444,21 @@ async function startWhatsApp() {
 
     waSocket.ev.on("messages.upsert", async (m) => {
       try {
-        console.log("Получено сообщение, тип:", m.type, "кол-во:", m.messages?.length);
+        console.log("Получено событие messages.upsert, тип:", m.type);
         if (!m.messages || m.type !== "notify") return;
         for (const msg of m.messages) {
           if (msg.key.fromMe) continue;
           const jid = msg.key.remoteJid || "";
-          console.log("JID:", jid);
+          console.log("Сообщение от JID:", jid);
           if (jid.endsWith("@g.us")) continue;
           if (jid === "status@broadcast") continue;
           if (!msg.message) continue;
           if (msg.message?.protocolMessage) continue;
           if (msg.message?.senderKeyDistributionMessage) continue;
-          if (msg.message?.reactionMessage) continue;
+                    if (msg.message?.reactionMessage) continue;
 
           const isLid = jid.endsWith("@lid");
-                    const isUser = jid.endsWith("@s.whatsapp.net");
+          const isUser = jid.endsWith("@s.whatsapp.net");
           if (!isLid && !isUser) continue;
 
           let waUserId = jid;
