@@ -323,7 +323,7 @@ async function stepDate({ channel, userId, low, s }) {
     : free2 > 0 ? "2 — с 5:00 до 6:00 (доступно " + free2 + " досок)"
     : "2 — с 5:00 до 6:00 (мест нет)";
   return await sendMsg(channel, userId,
-        "На " + formatDate(date) + " выберите время:\n\n"
+    "На " + formatDate(date) + " выберите время:\    "На " + formatDate(date) + " выберите время:\n\n"
     + show1 + "\n" + show2 + "\n\nНапишите 1 или 2"
   );
 }
