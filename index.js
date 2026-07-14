@@ -1,3 +1,4 @@
+cat > /app/index.js << 'ENDOFFILE'
 import express from "express";
 import axios from "axios";
 import qrcode from "qrcode";
@@ -412,18 +413,22 @@ async function startWhatsApp() {
       version,
       auth: state,
       logger: pino({ level: "silent" }),
-      printQRInTerminal: true,
       browser: ["SUP Bot", "Chrome", "1.0.0"],
       getMessage: async () => ({ conversation: "" }),
     });
 
     waSocket.ev.on("connection.update", async (update) => {
       const { connection, lastDisconnect, qr } = update;
-      if (qr) { lastQR = qr; console.log("QR готов! Зайди на /qr"); }
+      if (qr) {
+        lastQR = qr;
+        console.log("QR готов! Зайди на /qr");
+      }
       if (connection === "close") {
         lastQR = null;
         const code = new Boom(lastDisconnect?.error)?.output?.statusCode;
+        console.log("Соединение закрыто, код:", code);
         if (code !== DisconnectReason.loggedOut) {
+          console.log("Переподключение через 3 сек...");
           setTimeout(startWhatsApp, 3000);
         } else {
           console.log("Вышли из аккаунта. Удали папку auth_info_business");
@@ -440,10 +445,12 @@ async function startWhatsApp() {
 
     waSocket.ev.on("messages.upsert", async (m) => {
       try {
+        console.log("Получено сообщение, тип:", m.type, "кол-во:", m.messages?.length);
         if (!m.messages || m.type !== "notify") return;
         for (const msg of m.messages) {
           if (msg.key.fromMe) continue;
           const jid = msg.key.remoteJid || "";
+          console.log("JID:", jid);
           if (jid.endsWith("@g.us")) continue;
           if (jid === "status@broadcast") continue;
           if (!msg.message) continue;
@@ -452,7 +459,7 @@ async function startWhatsApp() {
           if (msg.message?.reactionMessage) continue;
 
           const isLid = jid.endsWith("@lid");
-          const isUser = jid.endsWith("@s.whatsapp.net");
+                    const isUser = jid.endsWith("@s.whatsapp.net");
           if (!isLid && !isUser) continue;
 
           let waUserId = jid;
@@ -460,7 +467,7 @@ async function startWhatsApp() {
             try {
               const realJid = await waSocket.onWhatsApp(jid);
               if (realJid && realJid[0] && realJid[0].jid) {
-                                waUserId = realJid[0].jid;
+                waUserId = realJid[0].jid;
               }
             } catch (e) {
               waUserId = jid;
@@ -468,6 +475,7 @@ async function startWhatsApp() {
           }
 
           if (msg.message?.imageMessage || msg.message?.documentMessage || msg.message?.documentWithCaptionMessage) {
+            console.log("Фото получено от:", waUserId);
             await handleReceiptPhoto({ channel: "wa", userId: waUserId });
             continue;
           }
@@ -477,6 +485,8 @@ async function startWhatsApp() {
             msg.message?.extendedTextMessage?.text ||
             msg.message?.buttonsResponseMessage?.selectedDisplayText ||
             msg.message?.listResponseMessage?.title || "";
+
+          console.log("Текст от", waUserId, ":", text);
 
           if (text && text.trim().length > 0) {
             await handleMessage({ channel: "wa", userId: waUserId, text: text.trim() });
