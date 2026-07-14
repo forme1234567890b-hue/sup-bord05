@@ -449,8 +449,10 @@ async function startWhatsApp() {
         if (type !== "notify") return;
 
         for (const msg of messages) {
-          if (!msg.message) continue;
-          if (msg.key.fromMe) continue;
+  console.log("msg.key:", JSON.stringify(msg.key));
+  console.log("msg.message:", JSON.stringify(msg.message));
+  if (!msg.message) { console.log("Нет msg.message, пропускаю"); continue; }
+  if (msg.key.fromMe) { console.log("Моё сообщение, пропускаю"); continue; }
 
           const jid = msg.key.remoteJid;
           if (!jid) continue;
