@@ -457,8 +457,12 @@ async function startWhatsApp() {
           if (msg.message?.reactionMessage) continue;
 
           const isLid = jid.endsWith("@lid");
-          const isUser = jid.endsWith("@s.whatsapp.net");
-          if (!isLid && !isUser) continue;
+const isUser = jid.endsWith("@s.whatsapp.net");
+console.log("JID:", jid, "| isLid:", isLid, "| isUser:", isUser);
+if (!isLid && !isUser) {
+  console.log("Пропускаю JID:", jid);
+  continue;
+}
 
           const waUserId = jid;
           console.log("Сообщение от JID:", waUserId);
