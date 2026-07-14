@@ -1,4 +1,3 @@
-cat > /app/index.js << 'ENDOFFILE'
 import express from "express";
 import axios from "axios";
 import qrcode from "qrcode";
@@ -405,7 +404,6 @@ async function handleReceiptPhoto({ channel, userId }) {
   if (sessionTimers[userId]) { clearTimeout(sessionTimers[userId]); delete sessionTimers[userId]; }
   return await sendMsg(channel, userId, "Чек получен!\n\nБронь за вами закреплена!\n\nОплату проверит " + CONFIG.INSTRUCTOR + "\nПо всем вопросам: " + CONFIG.PHONE);
 }
-ENDOFFILEcat >> /app/index.js << 'ENDOFFILE'
 
 async function startWhatsApp() {
   try {
@@ -436,7 +434,7 @@ async function startWhatsApp() {
         const code = new Boom(lastDisconnect?.error)?.output?.statusCode;
         console.log("Соединение закрыто, код:", code);
         if (code === DisconnectReason.loggedOut) {
-          console.log("Разлогинен! Удали /app/auth_info_business и перезапусти.");
+          console.log("Разлогинен!");
           await notifyTelegram("WhatsApp разлогинен! Нужно заново сканировать QR.");
         } else {
           console.log("Переподключение через 3 сек...");
@@ -463,12 +461,10 @@ async function startWhatsApp() {
           if (!isLid && !isUser) continue;
 
           const waUserId = jid;
-
           console.log("Сообщение от JID:", waUserId);
 
           if (
             msg.message?.imageMessage ||
-            msg.message?.documentMessage ||
             msg.message?.documentWithCaptionMessage
           ) {
             console.log("Фото получено от:", waUserId);
@@ -506,4 +502,3 @@ app.listen(PORT, async () => {
   await notifyTelegram("Сервер запущен! Бот готов к работе.");
   startWhatsApp();
 });
-ENDOFFILE
