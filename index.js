@@ -325,54 +325,74 @@ async function startWhatsApp() {
 
     waSocket.ev.on("creds.update", saveCreds);
 
-    waSocket.ev.on("messages.upsert", async (m) => {
-      try {
-        if (!m.messages) return;
-        if (m.type !== "notify") return; // ✅ только новые сообщения
+  waSocket.ev.on("messages.upsert", async (m) => {
+  try {
+    if (!m.messages) return;
+    if (m.type !== "notify") return;
 
-        for (const msg of m.messages) {
-          console.log("📨 Сообщение:", {
-            fromMe:    msg.key.fromMe,
-            remoteJid: msg.key.remoteJid,
-            type:      Object.keys(msg.message || {})[0],
-            text:      msg.message?.conversation ||
-                       msg.message?.extendedTextMessage?.text || "",
-          });
+    for (const msg of m.messages) {
+      if (msg.key.fromMe) continue;
+      
+      // ✅ ИСПРАВЛЕНО - пропускаем группы и статусы
+      if (msg.key.remoteJid.endsWith("@g.us")) continue;
+      if (msg.key.remoteJid === "status@broadcast") continue;
+      if (!msg.message) continue;
+      if (msg.message?.protocolMessage) continue;
+      if (msg.message?.senderKeyDistributionMessage) continue;
+      if (msg.message?.reactionMessage) continue;
 
-          if (msg.key.fromMe) continue;
-          if (msg.key.remoteJid.endsWith("@g.us")) continue;
-          if (!msg.message) continue;
+      // ✅ ИСПРАВЛЕНО - принимаем и @lid и @s.whatsapp.net
+      const isLid = msg.key.remoteJid.endsWith("@lid");
+      const isUser = msg.key.remoteJid.endsWith("@s.whatsapp.net");
+      if (!isLid && !isUser) continue;
 
-          // ✅ Игнорируем протокольные сообщения WA Business
-          if (msg.message?.protocolMessage) continue;
-          if (msg.message?.senderKeyDistributionMessage) continue;
-          if (msg.message?.reactionMessage) continue;
-
-          const userId = msg.key.remoteJid;
-          const text =
-            msg.message?.conversation ||
-            msg.message?.extendedTextMessage?.text ||
-            msg.message?.buttonsResponseMessage?.selectedDisplayText ||
-            msg.message?.listResponseMessage?.title ||
-            msg.message?.templateButtonReplyMessage?.selectedDisplayText || "";
-
-          if (
-            msg.message?.imageMessage ||
-            msg.message?.documentMessage ||
-            msg.message?.documentWithCaptionMessage
-          ) {
-            await handleReceiptPhoto({ channel: "wa", userId });
-            continue;
+      // ✅ ИСПРАВЛЕНО - для @lid получаем реальный номер
+      let userId = msg.key.remoteJid;
+      if (isLid) {
+        try {
+          // Пробуем получить реальный jid
+          const realJid = await waSocket.onWhatsApp(msg.key.remoteJid);
+          if (realJid && realJid[0]) {
+            userId = realJid[0].jid;
+            console.log("✅ LID конвертирован:", msg.key.remoteJid, "→", userId);
+          } else {
+            // Если не получилось - используем как есть
+            userId = msg.key.remoteJid;
+            console.log("⚠️ LID не конвертирован, используем как есть:", userId);
           }
-
-          if (text && text.trim().length > 0) {
-            await handleMessage({ channel: "wa", userId, text: text.trim() });
-          }
+        } catch (e) {
+          userId = msg.key.remoteJid;
+          console.log("⚠️ Ошибка конвертации LID:", e.message);
         }
-      } catch (err) {
-        console.error("❌ Ошибка WA:", err);
       }
-    });
+
+      console.log("📨 Сообщение от:", userId);
+
+      const text =
+        msg.message?.conversation ||
+        msg.message?.extendedTextMessage?.text ||
+        msg.message?.buttonsResponseMessage?.selectedDisplayText ||
+        msg.message?.listResponseMessage?.title || "";
+
+      if (
+        msg.message?.imageMessage ||
+        msg.message?.documentMessage ||
+        msg.message?.documentWithCaptionMessage
+      ) {
+        console.log("📸 Фото получено от:", userId);
+        await handleReceiptPhoto({ channel: "wa", userId });
+        continue;
+      }
+
+      if (text && text.trim().length > 0) {
+        console.log("💬 Текст:", text, "от:", userId);
+        await handleMessage({ channel: "wa", userId, text: text.trim() });
+      }
+    }
+  } catch (err) {
+    console.error("❌ Ошибка WA:", err);
+  }
+});
 
   } catch (err) {
     console.error("❌ Ошибка запуска WA:", err);
