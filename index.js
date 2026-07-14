@@ -452,7 +452,10 @@ async function startWhatsApp() {
   console.log("msg.key:", JSON.stringify(msg.key));
   console.log("msg.message:", JSON.stringify(msg.message));
   if (!msg.message) { console.log("Нет msg.message, пропускаю"); continue; }
-  if (msg.key.fromMe) { console.log("Моё сообщение, пропускаю"); continue; }
+  if (msg.key.fromMe) { 
+  console.log("fromMe=true, JID:", msg.key.remoteJid);
+  // Не пропускаем — просто логируем, продолжаем
+}
 
           const jid = msg.key.remoteJid;
           if (!jid) continue;
