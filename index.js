@@ -1,5 +1,3 @@
-// ─── WhatsApp подключение ────────────────────────────────────────────────────
-
 async function startWhatsApp() {
   try {
     const { state, saveCreds } = await useMultiFileAuthState("auth_info_business");
@@ -46,12 +44,10 @@ async function startWhatsApp() {
         if (m.type !== "notify") return;
 
         for (const msg of m.messages) {
-          // Пропускаем свои сообщения
           if (msg.key.fromMe) continue;
 
           const jid = msg.key.remoteJid || "";
 
-          // Пропускаем группы и статусы
           if (jid.endsWith("@g.us")) continue;
           if (jid === "status@broadcast") continue;
           if (!msg.message) continue;
@@ -59,12 +55,10 @@ async function startWhatsApp() {
           if (msg.message?.senderKeyDistributionMessage) continue;
           if (msg.message?.reactionMessage) continue;
 
-          // Принимаем @lid и @s.whatsapp.net
           const isLid  = jid.endsWith("@lid");
           const isUser = jid.endsWith("@s.whatsapp.net");
           if (!isLid && !isUser) continue;
 
-          // Для @lid пробуем получить реальный номер
           let userId = jid;
           if (isLid) {
             try {
@@ -84,14 +78,12 @@ async function startWhatsApp() {
 
           console.log("📨 Сообщение от:", userId);
 
-          // Получаем текст
           const text =
             msg.message?.conversation ||
             msg.message?.extendedTextMessage?.text ||
             msg.message?.buttonsResponseMessage?.selectedDisplayText ||
             msg.message?.listResponseMessage?.title || "";
 
-          // Проверяем фото/чек
           if (
             msg.message?.imageMessage ||
             msg.message?.documentMessage ||
@@ -102,7 +94,6 @@ async function startWhatsApp() {
             continue;
           }
 
-          // Обрабатываем текст
           if (text && text.trim().length > 0) {
             console.log("💬 Текст:", text, "| от:", userId);
             await handleMessage({ channel: "wa", userId, text: text.trim() });
@@ -119,8 +110,6 @@ async function startWhatsApp() {
   }
 }
 
-// ─── Основной обработчик сообщений ──────────────────────────────────────────
-
 async function handleMessage({ channel, userId, text }) {
   try {
     console.log("🔥 handleMessage | userId:", userId, "| text:", text);
@@ -134,7 +123,6 @@ async function handleMessage({ channel, userId, text }) {
 
     resetTimer(userId);
 
-    // Если есть активный шаг — отправляем туда
     if (s.step === "wait_count")    return await stepCount({ channel, userId, low, s });
     if (s.step === "wait_date")     return await stepDate({ channel, userId, low, s });
     if (s.step === "wait_group")    return await stepGroup({ channel, userId, low, s });
@@ -153,7 +141,6 @@ async function handleMessage({ channel, userId, text }) {
       );
     }
 
-    // Пропускаем ответные приветствия
     const isGreetingReply = GREETING_REPLIES.some(w => low.includes(w));
     if (isGreetingReply) return;
 
@@ -163,9 +150,7 @@ async function handleMessage({ channel, userId, text }) {
 
     console.log("🔍 hasSap:", hasSap, "| hasPrice:", hasPrice, "| greet:", greetMatch ? "ДА" : "НЕТ");
 
-    // Приветствие
     if (greetMatch) {
-      // Если в сообщении есть и приветствие и слово про сап
       if (hasSap || hasPrice) {
         const count = extractNumber(low);
         if (count) {
@@ -184,7 +169,6 @@ async function handleMessage({ channel, userId, text }) {
       return await sendMsg(channel, userId, greetMatch.response);
     }
 
-    // Только цена
     if (hasPrice && !hasSap) {
       s.step = "ask_book";
       return await sendMsg(channel, userId,
@@ -192,7 +176,6 @@ async function handleMessage({ channel, userId, text }) {
       );
     }
 
-    // Сап или бронь
     if (hasSap || hasPrice) {
       const count = extractNumber(low);
       if (count) {
@@ -206,7 +189,6 @@ async function handleMessage({ channel, userId, text }) {
       );
     }
 
-    // Неизвестное сообщение
     console.log("⚠️ Неизвестное сообщение, не отвечаем");
     return;
 
@@ -214,8 +196,6 @@ async function handleMessage({ channel, userId, text }) {
     console.error("❌ handleMessage error:", err);
   }
 }
-
-// ─── Шаги бронирования ───────────────────────────────────────────────────────
 
 async function stepAskBook({ channel, userId, low, s }) {
   const yes = ["да","yes","конечно","ок","хорошо","давай","хочу","бронировать"];
@@ -323,7 +303,7 @@ async function stepDate({ channel, userId, low, s }) {
     : free2 > 0 ? "2 — с 5:00 до 6:00 (доступно " + free2 + " досок)"
     : "2 — с 5:00 до 6:00 (мест нет)";
   return await sendMsg(channel, userId,
-    "На " + formatDate(date) + " выберите время:\    "На " + formatDate(date) + " выберите время:\n\n"
+    "На " + formatDate(date) + " выберите время:\n\n"
     + show1 + "\n" + show2 + "\n\nНапишите 1 или 2"
   );
 }
@@ -342,8 +322,7 @@ async function stepGroup({ channel, userId, low, s }) {
     if (otherFree >= s.count) {
       return await sendMsg(channel, userId,
         "В это время мест нет 😔\n\n"
-        + "Есть места " + CONFIG.GROUPS[other].label + "\n"
-        + "Напишите " + other + " чтобы выбрать."
+        + "Есть места " + CONFIG.GROUPS[other].label + "\        + "Напишите " + other + " чтобы выбрать."
       );
     }
     return await sendMsg(channel, userId, "Нет мест. Попробуйте другую дату.");
@@ -447,8 +426,6 @@ async function stepConfirm({ channel, userId, low, s }) {
   return await sendMsg(channel, userId, "Ответьте: Да или Нет");
 }
 
-// ─── Обработка фото чека ─────────────────────────────────────────────────────
-
 async function handleReceiptPhoto({ channel, userId }) {
   const s = sessions[userId];
   if (!s || s.step !== "wait_receipt") {
@@ -481,8 +458,6 @@ async function handleReceiptPhoto({ channel, userId }) {
     + "По всем вопросам: " + CONFIG.PHONE
   );
 }
-
-// ─── Запуск сервера ──────────────────────────────────────────────────────────
 
 const PORT = process.env.PORT || 8080;
 app.listen(PORT, async () => {
