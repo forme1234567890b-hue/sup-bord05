@@ -253,11 +253,11 @@ app.post("/tg_webhook", async (req, res) => {
       }
       confirmedBookings[booking.userId] = {
         bookingId,
-        date:     booking.date,
-        group:    booking.group,
-        count:    booking.count,
-        duration: booking.duration,
-        total:    booking.total,
+        date:        booking.date,
+        group:       booking.group,
+        count:       booking.count,
+        duration:    booking.duration,
+        total:       booking.total,
         confirmedAt: new Date().toISOString(),
       };
       if (sessionTimers[booking.userId]) {
@@ -342,35 +342,46 @@ async function startWhatsApp() {
 
     waSocket.ev.on("creds.update", saveCreds);
 
+    // ✅ ИСПРАВЛЕНО: убрана @lid логика, добавлен фильтр status@broadcast
     waSocket.ev.on("messages.upsert", async (m) => {
       try {
         if (!m.messages) return;
+
         for (const msg of m.messages) {
+          const jid  = msg.key.remoteJid || "";
+          const text = msg.message?.conversation
+            || msg.message?.extendedTextMessage?.text
+            || "";
+
           console.log("=== СООБЩЕНИЕ ===");
           console.log("fromMe:", msg.key.fromMe);
-          console.log("jid:", msg.key.remoteJid);
+          console.log("jid:", jid);
           console.log("type:", m.type);
-          console.log("text:", msg.message?.conversation || msg.message?.extendedTextMessage?.text || "нет текста");
+          console.log("text:", text || "нет текста");
           console.log("=================");
 
+          // Пропускаем свои сообщения
           if (msg.key.fromMe) continue;
-          if (msg.key.remoteJid.endsWith("@g.us")) continue;
+
+          // Пропускаем группы
+          if (jid.endsWith("@g.us")) continue;
+
+          // Пропускаем статусы
+          if (jid === "status@broadcast") continue;
+
+          // Пропускаем пустые сообщения
           if (!msg.message) continue;
 
-          const userId = msg.key.remoteJid.endsWith("@lid")
-            ? (msg.key.senderPn || msg.key.remoteJid)
-            : msg.key.remoteJid;
+          // ✅ Простой userId для обычного WhatsApp
+          const userId = jid;
 
-          const text =
-            msg.message?.conversation ||
-            msg.message?.extendedTextMessage?.text ||
-            msg.message?.buttonsResponseMessage?.selectedDisplayText ||
-            msg.message?.listResponseMessage?.title || "";
+          console.log(">>> Обрабатываем сообщение от:", userId);
 
           if (msg.message?.imageMessage || msg.message?.documentMessage) {
             await handleReceiptPhoto({ channel: "wa", userId });
             continue;
           }
+
           if (text && text.trim().length > 0) {
             await handleMessage({ channel: "wa", userId, text: text.trim() });
           }
@@ -618,7 +629,7 @@ async function stepGroup({ channel, userId, low, s }) {
     "На сколько времени?\n\n"
     + "1 - 1 час (800 руб)\n"
     + "2 - 1.5 часа (1000 руб)\n"
-    + "3 - 2 часа (1200 руб)"
+        + "3 - 2 часа (1200 руб)"
   );
 }
 
