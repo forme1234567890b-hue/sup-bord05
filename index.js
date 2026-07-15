@@ -28,17 +28,16 @@ const CONFIG = {
     "1.5": { label: "1.5 часа", price: 1000 },
     "2":   { label: "2 часа",   price: 1200 },
   },
-  SESSION_TIMEOUT: 60 * 60 * 1000, // 1 час
+  SESSION_TIMEOUT: 60 * 60 * 1000,
 };
 
-const bookings        = {};
-const sessions        = {};
-const pendingPayments = {};
-const sessionTimers   = {};
-// НОВОЕ: хранит подтверждённые брони
+const bookings          = {};
+const sessions          = {};
+const pendingPayments   = {};
+const sessionTimers     = {};
 const confirmedBookings = {};
-let   lastQR          = null;
-let   waSocket        = null;
+let   lastQR            = null;
+let   waSocket          = null;
 
 const SAP_WORDS = [
   "бронь","бронировать","забронировать","сап","сапборд",
@@ -50,8 +49,6 @@ const PRICE_WORDS = [
   "прайс","почем","по чем","тариф","стоит аренда",
 ];
 
-// ИЗМЕНЕНО: убраны "ваалейкум" ответы на приветствия — 
-// бот теперь не отвечает на ответное приветствие
 const GREETINGS = [
   { triggers: ["ассаламу алейкум","ассалам алейкум","салам алейкум","السلام عليكم"], response: "Ваалейкум ассалам! 🙏\n\nЧем могу помочь? Хотите забронировать сапборд?" },
   { triggers: ["السلام","مرحبا","اهلا","أهلا"], response: "وعليكم السلام! 🙏" },
@@ -64,9 +61,8 @@ const GREETINGS = [
   { triggers: ["салам","salam"], response: "Ваалейкум ассалам! 🙏\n\nЧем могу помочь? Хотите забронировать сапборд?" },
 ];
 
-// НОВОЕ: слова-ответы на приветствие — бот НЕ должен на них реагировать
 const GREETING_REPLIES = [
-  "ваалейкум","вааалейкум","ваалейкум ассалам","ваалейкум ассалам!",
+  "ваалейкум","вааалейкум","ваалейкум ассалам",
   "и тебе привет","и вам","взаимно","пожалуйста",
   "وعليكم السلام",
 ];
@@ -165,20 +161,15 @@ async function sendMsg(channel, userId, text) {
   if (channel === "wa") return await sendWA(userId, text);
 }
 
-// ИЗМЕНЕНО: таймер теперь 1 час, и при истечении отменяет бронь если не подтверждена
 function resetTimer(userId) {
   if (sessionTimers[userId]) clearTimeout(sessionTimers[userId]);
   const s = sessions[userId];
   if (!s || s.step === "idle") return;
-  
-  // Если бронь уже подтверждена инструктором — таймер не нужен
   if (confirmedBookings[userId]) return;
 
   sessionTimers[userId] = setTimeout(async () => {
     const sess = sessions[userId];
     if (!sess || sess.step === "idle") return;
-    
-    // Если есть активная бронь — освобождаем место
     if (sess.bookingId && pendingPayments[sess.bookingId]) {
       const b = pendingPayments[sess.bookingId];
       if (bookings[b.date] && bookings[b.date][b.group]) {
@@ -186,18 +177,15 @@ function resetTimer(userId) {
       }
       delete pendingPayments[sess.bookingId];
       await notifyTelegram("Бронь " + sess.bookingId + " автоматически отменена (таймаут 1 час)");
-      
-      // Уведомляем клиента
       await sendMsg(sess.channel, userId,
         "Время ожидания истекло ⏰\n\n"
         + "Ваша бронь была отменена так как не была завершена в течение 1 часа.\n"
         + "Если хотите забронировать снова — просто напишите нам!"
       );
     }
-    
     sessions[userId] = { step: "idle", channel: sess.channel };
     delete sessionTimers[userId];
-    console.log("Сессия сброшена по таймауту (1 час): " + userId);
+    console.log("Сессия сброшена по таймауту: " + userId);
   }, CONFIG.SESSION_TIMEOUT);
 }
 
@@ -263,8 +251,6 @@ app.post("/tg_webhook", async (req, res) => {
         await notifyTelegram("Бронь " + bookingId + " не найдена");
         return res.sendStatus(200);
       }
-      
-      // НОВОЕ: сохраняем подтверждённую бронь
       confirmedBookings[booking.userId] = {
         bookingId,
         date:     booking.date,
@@ -274,16 +260,11 @@ app.post("/tg_webhook", async (req, res) => {
         total:    booking.total,
         confirmedAt: new Date().toISOString(),
       };
-      
-      // Останавливаем таймер — бронь подтверждена
       if (sessionTimers[booking.userId]) {
         clearTimeout(sessionTimers[booking.userId]);
         delete sessionTimers[booking.userId];
       }
-      
       const grp = CONFIG.GROUPS[booking.group];
-      
-      // Уведомляем клиента об успешном подтверждении
       await sendMsg(booking.channel, booking.userId,
         "✅ Оплата подтверждена!\n\n"
         + "Номер брони: " + bookingId + "\n"
@@ -294,7 +275,6 @@ app.post("/tg_webhook", async (req, res) => {
         + "Тел: " + CONFIG.PHONE + "\n\n"
         + "Ждём вас! 🏄"
       );
-      
       delete pendingPayments[bookingId];
       sessions[booking.userId] = { step: "idle", channel: booking.channel };
       await notifyTelegram("Бронь " + bookingId + " подтверждена! Клиент уведомлён.");
@@ -366,12 +346,17 @@ async function startWhatsApp() {
       try {
         if (!m.messages) return;
         for (const msg of m.messages) {
-          // НОВОЕ: пропускаем исходящие сообщения (когда МЫ пишем первыми)
+          console.log("=== СООБЩЕНИЕ ===");
+          console.log("fromMe:", msg.key.fromMe);
+          console.log("jid:", msg.key.remoteJid);
+          console.log("type:", m.type);
+          console.log("text:", msg.message?.conversation || msg.message?.extendedTextMessage?.text || "нет текста");
+          console.log("=================");
+
           if (msg.key.fromMe) continue;
           if (msg.key.remoteJid.endsWith("@g.us")) continue;
           if (!msg.message) continue;
 
-          // НОВОЕ: получаем правильный userId (поддержка @lid)
           const userId = msg.key.remoteJid.endsWith("@lid")
             ? (msg.key.senderPn || msg.key.remoteJid)
             : msg.key.remoteJid;
@@ -408,7 +393,6 @@ async function handleMessage({ channel, userId, text }) {
     const s = sessions[userId];
     s.channel = channel;
 
-    // НОВОЕ: если бронь уже подтверждена — не запускаем алгоритм заново
     if (confirmedBookings[userId]) {
       const cb  = confirmedBookings[userId];
       const grp = CONFIG.GROUPS[cb.group];
@@ -441,19 +425,15 @@ async function handleMessage({ channel, userId, text }) {
       );
     }
 
-    // НОВОЕ: проверяем — это ответное приветствие? Если да — игнорируем
     const isGreetingReply = GREETING_REPLIES.some(w => low.includes(w));
-    if (isGreetingReply) {
-      return; // Не отвечаем на "ваалейкум", "и тебе привет" и т.д.
-    }
+    if (isGreetingReply) return;
 
-    const hasSap   = SAP_WORDS.some(w => low.includes(w));
-    const hasPrice = PRICE_WORDS.some(w => low.includes(w));
+    const hasSap     = SAP_WORDS.some(w => low.includes(w));
+    const hasPrice   = PRICE_WORDS.some(w => low.includes(w));
     const greetMatch = GREETINGS.find(g => g.triggers.some(t => low.includes(t)));
 
     if (greetMatch) {
       s.step = "idle";
-      // Если в приветствии сразу есть запрос на сап — переходим к бронированию
       if (hasSap || hasPrice) {
         await sendMsg(channel, userId, greetMatch.response);
         const count = extractNumber(low);
@@ -499,7 +479,6 @@ async function handleMessage({ channel, userId, text }) {
 async function stepAskBook({ channel, userId, low, s }) {
   const yes = ["да","yes","конечно","ок","хорошо","давай","хочу","бронировать"];
   const no  = ["нет","no","не надо","не хочу","отмена"];
-
   if (yes.some(w => low.includes(w))) {
     const count = extractNumber(low);
     if (count) {
@@ -616,9 +595,9 @@ async function stepGroup({ channel, userId, low, s }) {
   }
   const free = CONFIG.CAPACITY - getBooked(s.date, group);
   if (free <= 0) {
-    const other = group === "1" ? "2" : "1";
+    const other     = group === "1" ? "2" : "1";
     const otherFree = CONFIG.CAPACITY - getBooked(s.date, other);
-        if (otherFree >= s.count) {
+    if (otherFree >= s.count) {
       return await sendMsg(channel, userId,
         "В это время мест нет 😔\n\n"
         + "Есть места " + CONFIG.GROUPS[other].label + "\n"
@@ -713,7 +692,6 @@ async function stepConfirm({ channel, userId, low, s }) {
     );
   }
   if (no.some(w => low.includes(w))) {
-    // Освобождаем место если оно было зарезервировано
     if (bookings[s.date] && bookings[s.date][s.group]) {
       bookings[s.date][s.group] = Math.max(0, bookings[s.date][s.group] - s.count);
     }
@@ -739,13 +717,10 @@ async function handleReceiptPhoto({ channel, userId }) {
     + "/cancel_" + s.bookingId
   );
   s.step = "waiting_confirm";
-  
-  // Останавливаем таймер пока ждём подтверждения инструктора
   if (sessionTimers[userId]) {
     clearTimeout(sessionTimers[userId]);
     delete sessionTimers[userId];
   }
-  
   return await sendMsg(channel, userId,
     "Чек получен! 📸\n\n"
     + "Бронь за вами закреплена!\n\n"
