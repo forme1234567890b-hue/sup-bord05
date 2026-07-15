@@ -28,13 +28,15 @@ const CONFIG = {
     "1.5": { label: "1.5 часа", price: 1000 },
     "2":   { label: "2 часа",   price: 1200 },
   },
-  SESSION_TIMEOUT: 30 * 60 * 1000,
+  SESSION_TIMEOUT: 60 * 60 * 1000, // 1 час
 };
 
 const bookings        = {};
 const sessions        = {};
 const pendingPayments = {};
 const sessionTimers   = {};
+// НОВОЕ: хранит подтверждённые брони
+const confirmedBookings = {};
 let   lastQR          = null;
 let   waSocket        = null;
 
@@ -48,16 +50,25 @@ const PRICE_WORDS = [
   "прайс","почем","по чем","тариф","стоит аренда",
 ];
 
+// ИЗМЕНЕНО: убраны "ваалейкум" ответы на приветствия — 
+// бот теперь не отвечает на ответное приветствие
 const GREETINGS = [
-  { triggers: ["салам алейкум","السلام عليكم"], response: "Ваалейкум ассалам! 🙏" },
+  { triggers: ["ассаламу алейкум","ассалам алейкум","салам алейкум","السلام عليكم"], response: "Ваалейкум ассалам! 🙏\n\nЧем могу помочь? Хотите забронировать сапборд?" },
   { triggers: ["السلام","مرحبا","اهلا","أهلا"], response: "وعليكم السلام! 🙏" },
-  { triggers: ["привет","хай","хей","hey"], response: "Привет! 👋" },
-  { triggers: ["здравствуйте","здравствуй"], response: "Здравствуйте! 👋" },
-  { triggers: ["добрый день"], response: "Добрый день! 👋" },
-  { triggers: ["добрый вечер"], response: "Добрый вечер! 👋" },
-  { triggers: ["доброе утро"], response: "Доброе утро! 👋" },
-  { triggers: ["hello","hi"], response: "Hello! 👋" },
-  { triggers: ["салам","salam"], response: "Ваалейкум ассалам! 🙏" },
+  { triggers: ["привет","хай","хей","hey"], response: "Привет! 👋\n\nЧем могу помочь? Хотите забронировать сапборд?" },
+  { triggers: ["здравствуйте","здравствуй"], response: "Здравствуйте! 👋\n\nЧем могу помочь? Хотите забронировать сапборд?" },
+  { triggers: ["добрый день"], response: "Добрый день! 👋\n\nЧем могу помочь?" },
+  { triggers: ["добрый вечер"], response: "Добрый вечер! 👋\n\nЧем могу помочь?" },
+  { triggers: ["доброе утро"], response: "Доброе утро! 👋\n\nЧем могу помочь?" },
+  { triggers: ["hello","hi"], response: "Hello! 👋\n\nHow can I help you?" },
+  { triggers: ["салам","salam"], response: "Ваалейкум ассалам! 🙏\n\nЧем могу помочь? Хотите забронировать сапборд?" },
+];
+
+// НОВОЕ: слова-ответы на приветствие — бот НЕ должен на них реагировать
+const GREETING_REPLIES = [
+  "ваалейкум","вааалейкум","ваалейкум ассалам","ваалейкум ассалам!",
+  "и тебе привет","и вам","взаимно","пожалуйста",
+  "وعليكم السلام",
 ];
 
 function getBooked(date, group) {
@@ -154,17 +165,39 @@ async function sendMsg(channel, userId, text) {
   if (channel === "wa") return await sendWA(userId, text);
 }
 
+// ИЗМЕНЕНО: таймер теперь 1 час, и при истечении отменяет бронь если не подтверждена
 function resetTimer(userId) {
   if (sessionTimers[userId]) clearTimeout(sessionTimers[userId]);
   const s = sessions[userId];
-  if (!s || s.step === "idle" || s.step === "waiting_confirm") return;
-  sessionTimers[userId] = setTimeout(() => {
+  if (!s || s.step === "idle") return;
+  
+  // Если бронь уже подтверждена инструктором — таймер не нужен
+  if (confirmedBookings[userId]) return;
+
+  sessionTimers[userId] = setTimeout(async () => {
     const sess = sessions[userId];
-    if (sess && sess.step !== "idle" && sess.step !== "waiting_confirm") {
-      sessions[userId] = { step: "idle", channel: sess.channel };
-      delete sessionTimers[userId];
-      console.log("Сессия сброшена по таймауту: " + userId);
+    if (!sess || sess.step === "idle") return;
+    
+    // Если есть активная бронь — освобождаем место
+    if (sess.bookingId && pendingPayments[sess.bookingId]) {
+      const b = pendingPayments[sess.bookingId];
+      if (bookings[b.date] && bookings[b.date][b.group]) {
+        bookings[b.date][b.group] = Math.max(0, bookings[b.date][b.group] - b.count);
+      }
+      delete pendingPayments[sess.bookingId];
+      await notifyTelegram("Бронь " + sess.bookingId + " автоматически отменена (таймаут 1 час)");
+      
+      // Уведомляем клиента
+      await sendMsg(sess.channel, userId,
+        "Время ожидания истекло ⏰\n\n"
+        + "Ваша бронь была отменена так как не была завершена в течение 1 часа.\n"
+        + "Если хотите забронировать снова — просто напишите нам!"
+      );
     }
+    
+    sessions[userId] = { step: "idle", channel: sess.channel };
+    delete sessionTimers[userId];
+    console.log("Сессия сброшена по таймауту (1 час): " + userId);
   }, CONFIG.SESSION_TIMEOUT);
 }
 
@@ -230,9 +263,41 @@ app.post("/tg_webhook", async (req, res) => {
         await notifyTelegram("Бронь " + bookingId + " не найдена");
         return res.sendStatus(200);
       }
+      
+      // НОВОЕ: сохраняем подтверждённую бронь
+      confirmedBookings[booking.userId] = {
+        bookingId,
+        date:     booking.date,
+        group:    booking.group,
+        count:    booking.count,
+        duration: booking.duration,
+        total:    booking.total,
+        confirmedAt: new Date().toISOString(),
+      };
+      
+      // Останавливаем таймер — бронь подтверждена
+      if (sessionTimers[booking.userId]) {
+        clearTimeout(sessionTimers[booking.userId]);
+        delete sessionTimers[booking.userId];
+      }
+      
+      const grp = CONFIG.GROUPS[booking.group];
+      
+      // Уведомляем клиента об успешном подтверждении
+      await sendMsg(booking.channel, booking.userId,
+        "✅ Оплата подтверждена!\n\n"
+        + "Номер брони: " + bookingId + "\n"
+        + "Дата: " + formatDate(booking.date) + "\n"
+        + "Время: " + grp.label + "\n"
+        + "Приходите " + grp.arrive + "\n\n"
+        + "Инструктор: " + CONFIG.INSTRUCTOR + "\n"
+        + "Тел: " + CONFIG.PHONE + "\n\n"
+        + "Ждём вас! 🏄"
+      );
+      
       delete pendingPayments[bookingId];
-      delete sessions[booking.userId];
-      await notifyTelegram("Бронь " + bookingId + " подтверждена!");
+      sessions[booking.userId] = { step: "idle", channel: booking.channel };
+      await notifyTelegram("Бронь " + bookingId + " подтверждена! Клиент уведомлён.");
       return res.sendStatus(200);
     }
 
@@ -249,10 +314,10 @@ app.post("/tg_webhook", async (req, res) => {
         );
       }
       await sendMsg(booking.channel, booking.userId,
-        "Оплата не прошла проверку.\nПо вопросам: " + CONFIG.PHONE
+        "❌ Оплата не прошла проверку.\n\nПо вопросам: " + CONFIG.PHONE
       );
       delete pendingPayments[bookingId];
-      delete sessions[booking.userId];
+      sessions[booking.userId] = { step: "idle", channel: booking.channel };
       await notifyTelegram("Бронь " + bookingId + " отменена");
       return res.sendStatus(200);
     }
@@ -262,7 +327,9 @@ app.post("/tg_webhook", async (req, res) => {
     console.error("TG webhook error:", err);
     res.sendStatus(500);
   }
-});async function startWhatsApp() {
+});
+
+async function startWhatsApp() {
   try {
     const { state, saveCreds } = await useMultiFileAuthState("auth_info");
     const { version }          = await fetchLatestBaileysVersion();
@@ -299,15 +366,22 @@ app.post("/tg_webhook", async (req, res) => {
       try {
         if (!m.messages) return;
         for (const msg of m.messages) {
+          // НОВОЕ: пропускаем исходящие сообщения (когда МЫ пишем первыми)
           if (msg.key.fromMe) continue;
           if (msg.key.remoteJid.endsWith("@g.us")) continue;
           if (!msg.message) continue;
-          const userId = msg.key.remoteJid;
+
+          // НОВОЕ: получаем правильный userId (поддержка @lid)
+          const userId = msg.key.remoteJid.endsWith("@lid")
+            ? (msg.key.senderPn || msg.key.remoteJid)
+            : msg.key.remoteJid;
+
           const text =
             msg.message?.conversation ||
             msg.message?.extendedTextMessage?.text ||
             msg.message?.buttonsResponseMessage?.selectedDisplayText ||
             msg.message?.listResponseMessage?.title || "";
+
           if (msg.message?.imageMessage || msg.message?.documentMessage) {
             await handleReceiptPhoto({ channel: "wa", userId });
             continue;
@@ -334,14 +408,27 @@ async function handleMessage({ channel, userId, text }) {
     const s = sessions[userId];
     s.channel = channel;
 
+    // НОВОЕ: если бронь уже подтверждена — не запускаем алгоритм заново
+    if (confirmedBookings[userId]) {
+      const cb  = confirmedBookings[userId];
+      const grp = CONFIG.GROUPS[cb.group];
+      return await sendMsg(channel, userId,
+        "У вас уже есть подтверждённая бронь! ✅\n\n"
+        + "Номер: " + cb.bookingId + "\n"
+        + "Дата: " + formatDate(cb.date) + "\n"
+        + "Время: " + grp.label + "\n\n"
+        + "По вопросам: " + CONFIG.PHONE
+      );
+    }
+
     resetTimer(userId);
 
-    if (s.step === "wait_count")       return await stepCount({ channel, userId, low, s });
-    if (s.step === "wait_date")        return await stepDate({ channel, userId, low, s });
-    if (s.step === "wait_group")       return await stepGroup({ channel, userId, low, s });
-    if (s.step === "wait_duration")    return await stepDuration({ channel, userId, low, s });
-    if (s.step === "confirm")          return await stepConfirm({ channel, userId, low, s });
-    if (s.step === "ask_book")         return await stepAskBook({ channel, userId, low, s });
+    if (s.step === "wait_count")    return await stepCount({ channel, userId, low, s });
+    if (s.step === "wait_date")     return await stepDate({ channel, userId, low, s });
+    if (s.step === "wait_group")    return await stepGroup({ channel, userId, low, s });
+    if (s.step === "wait_duration") return await stepDuration({ channel, userId, low, s });
+    if (s.step === "confirm")       return await stepConfirm({ channel, userId, low, s });
+    if (s.step === "ask_book")      return await stepAskBook({ channel, userId, low, s });
 
     if (s.step === "wait_receipt") {
       return await sendMsg(channel, userId,
@@ -354,12 +441,32 @@ async function handleMessage({ channel, userId, text }) {
       );
     }
 
+    // НОВОЕ: проверяем — это ответное приветствие? Если да — игнорируем
+    const isGreetingReply = GREETING_REPLIES.some(w => low.includes(w));
+    if (isGreetingReply) {
+      return; // Не отвечаем на "ваалейкум", "и тебе привет" и т.д.
+    }
+
     const hasSap   = SAP_WORDS.some(w => low.includes(w));
     const hasPrice = PRICE_WORDS.some(w => low.includes(w));
     const greetMatch = GREETINGS.find(g => g.triggers.some(t => low.includes(t)));
 
     if (greetMatch) {
       s.step = "idle";
+      // Если в приветствии сразу есть запрос на сап — переходим к бронированию
+      if (hasSap || hasPrice) {
+        await sendMsg(channel, userId, greetMatch.response);
+        const count = extractNumber(low);
+        if (count) {
+          s.count = count;
+          s.step  = "wait_date";
+          return await askDate(channel, userId);
+        }
+        s.step = "wait_count";
+        return await sendMsg(channel, userId,
+          "Сколько сапбордов вам нужно?\nНапишите цифру (например: 2)"
+        );
+      }
       return await sendMsg(channel, userId, greetMatch.response);
     }
 
@@ -446,8 +553,9 @@ async function stepDate({ channel, userId, low, s }) {
   const hasDate    = /\d{1,2}[.\-\/]\d{1,2}/.test(low);
   const hasKeyword = low.includes("сегодня") || low.includes("завтра") || low.includes("послезавтра");
   if (!hasDate && !hasKeyword) {
-    sessions[userId] = { step: "idle", channel };
-    return;
+    return await sendMsg(channel, userId,
+      "Не понял дату.\nНапишите: Сегодня, Завтра, Послезавтра или 25.07"
+    );
   }
   let date = null;
   const today = new Date();
@@ -510,7 +618,7 @@ async function stepGroup({ channel, userId, low, s }) {
   if (free <= 0) {
     const other = group === "1" ? "2" : "1";
     const otherFree = CONFIG.CAPACITY - getBooked(s.date, other);
-    if (otherFree >= s.count) {
+        if (otherFree >= s.count) {
       return await sendMsg(channel, userId,
         "В это время мест нет 😔\n\n"
         + "Есть места " + CONFIG.GROUPS[other].label + "\n"
@@ -596,17 +704,21 @@ async function stepConfirm({ channel, userId, low, s }) {
       + "/cancel_" + bookingId
     );
     return await sendMsg(channel, userId,
-      "Отлично! Осталось оплатить.\n\n"
+      "Отлично! Осталось оплатить. 💳\n\n"
       + "Номер брони: " + bookingId + "\n\n"
       + "Переведите " + s.total + " руб:\n"
       + CONFIG.PHONE + " (Сбербанк / СБП)\n\n"
-      + "После оплаты отправьте фото чека.\n"
-      + "Бронь действует 24 часа."
+      + "После оплаты отправьте фото чека. 📸\n"
+      + "Бронь действует 1 час."
     );
   }
   if (no.some(w => low.includes(w))) {
+    // Освобождаем место если оно было зарезервировано
+    if (bookings[s.date] && bookings[s.date][s.group]) {
+      bookings[s.date][s.group] = Math.max(0, bookings[s.date][s.group] - s.count);
+    }
     sessions[userId] = { step: "idle", channel };
-    return await sendMsg(channel, userId, "Бронь отменена. Если захотите - пишите снова!");
+    return await sendMsg(channel, userId, "Бронь отменена. Если захотите - пишите снова! 😊");
   }
   return await sendMsg(channel, userId, "Ответьте: Да или Нет");
 }
@@ -617,21 +729,28 @@ async function handleReceiptPhoto({ channel, userId }) {
   const info = CONFIG.PRICES[s.duration];
   const grp  = CONFIG.GROUPS[s.group];
   await notifyTelegram(
-    "ЧЕК ПОЛУЧЕН!\n\n"
+    "ЧЕК ПОЛУЧЕН! 📸\n\n"
     + "ID: " + s.bookingId + "\n"
     + "Дата: " + formatDate(s.date) + "\n"
     + "Время: " + grp.label + "\n"
     + "Досок: " + s.count + "\n"
     + "Сумма: " + s.total + " руб\n\n"
     + "/confirm_" + s.bookingId + "\n"
-        + "/cancel_" + s.bookingId
+    + "/cancel_" + s.bookingId
   );
   s.step = "waiting_confirm";
+  
+  // Останавливаем таймер пока ждём подтверждения инструктора
+  if (sessionTimers[userId]) {
+    clearTimeout(sessionTimers[userId]);
+    delete sessionTimers[userId];
+  }
+  
   return await sendMsg(channel, userId,
     "Чек получен! 📸\n\n"
     + "Бронь за вами закреплена!\n\n"
     + "Оплату проверит " + CONFIG.INSTRUCTOR + " (инструктор)\n"
-    + "По всем вопросам звонить ему: " + CONFIG.PHONE
+    + "По всем вопросам: " + CONFIG.PHONE
   );
 }
 
