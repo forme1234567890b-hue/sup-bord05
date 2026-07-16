@@ -36,9 +36,10 @@ const sessions          = {};
 const pendingPayments   = {};
 const sessionTimers     = {};
 const confirmedBookings = {};
-const lidToJid          = {};
-let   lastQR            = null;
-let   waSocket          = null;
+const userInfo          = {}; // userId -> { remoteJid, msgKey }
+
+let lastQR   = null;
+let waSocket = null;
 
 const SAP_WORDS = [
   "бронь","бронировать","забронировать","сап","сапборд",
@@ -68,10 +69,10 @@ const GREETING_REPLIES = [
   "وعليكم السلام",
 ];
 
+// ==================== HELPERS ====================
+
 function getBooked(date, group) {
-  if (!bookings[date]) return 0;
-  if (!bookings[date][group]) return 0;
-  return bookings[date][group];
+  return bookings[date]?.[group] || 0;
 }
 
 function getNextAvailableDate(fromDate) {
@@ -106,14 +107,14 @@ function formatISO(date) {
   const y  = date.getFullYear();
   const mo = String(date.getMonth() + 1).padStart(2,"0");
   const d  = String(date.getDate()).padStart(2,"0");
-  return y + "-" + mo + "-" + d;
+  return `${y}-${mo}-${d}`;
 }
 
 function parseDate(text) {
   const m1 = text.match(/(\d{1,2})[.\-\/](\d{1,2})[.\-\/](\d{4})/);
-  if (m1) return m1[3] + "-" + m1[2].padStart(2,"0") + "-" + m1[1].padStart(2,"0");
+  if (m1) return `${m1[3]}-${m1[2].padStart(2,"0")}-${m1[1].padStart(2,"0")}`;
   const m2 = text.match(/(\d{1,2})[.\-\/](\d{1,2})/);
-  if (m2) return new Date().getFullYear() + "-" + m2[2].padStart(2,"0") + "-" + m2[1].padStart(2,"0");
+  if (m2) return `${new Date().getFullYear()}-${m2[2].padStart(2,"0")}-${m2[1].padStart(2,"0")}`;
   return null;
 }
 
@@ -123,7 +124,7 @@ function formatDate(iso) {
     "января","февраля","марта","апреля","мая","июня",
     "июля","августа","сентября","октября","ноября","декабря",
   ];
-  return p[2] + " " + months[Number(p[1]) - 1] + " " + p[0];
+  return `${p[2]} ${months[Number(p[1]) - 1]} ${p[0]}`;
 }
 
 function generateId() {
@@ -145,15 +146,16 @@ function getPricesText() {
 async function notifyTelegram(text) {
   try {
     await axios.post(
-      "https://api.telegram.org/bot" + CONFIG.TG_TOKEN + "/sendMessage",
-      { chat_id: CONFIG.TG_CHAT_ID, text: text }
+      `https://api.telegram.org/bot${CONFIG.TG_TOKEN}/sendMessage`,
+      { chat_id: CONFIG.TG_CHAT_ID, text }
     );
   } catch (err) {
     console.error("TG error:", err.message);
   }
 }
 
-// ========== ИСПРАВЛЕННАЯ ФУНКЦИЯ ОТПРАВКИ ==========
+// ==================== ОТПРАВКА ====================
+
 async function sendWA(userId, text) {
   try {
     if (!waSocket) {
@@ -161,68 +163,49 @@ async function sendWA(userId, text) {
       return;
     }
 
-    // Определяем реальный JID для отправки
-    let sendTo = userId;
-
-    // Если это @lid — пробуем найти реальный номер
-    if (userId.endsWith("@lid")) {
-      if (lidToJid[userId]) {
-        sendTo = lidToJid[userId];
-        console.log("Используем маппинг:", userId, "->", sendTo);
-      } else {
-        // Пробуем через onWhatsApp
-        const lidNum = userId.replace("@lid", "");
-        try {
-          const results = await waSocket.onWhatsApp(lidNum + "@s.whatsapp.net");
-          if (results && results.length > 0 && results[0].exists) {
-            sendTo = results[0].jid;
-            lidToJid[userId] = sendTo;
-            console.log("onWhatsApp нашёл:", sendTo);
-          }
-        } catch(e) {
-          console.log("onWhatsApp ошибка:", e.message);
-        }
-      }
-    }
+    const info = userInfo[userId];
 
     console.log("=== ОТПРАВЛЯЕМ ===");
     console.log("userId:", userId);
-    console.log("sendTo:", sendTo);
+    console.log("remoteJid:", info?.remoteJid || "нет");
     console.log("text:", text.substring(0, 60));
 
-    // Пробуем отправить
-    try {
-      await waSocket.sendMessage(sendTo, { text });
-      console.log("✅ Отправлено на:", sendTo);
+    if (!info?.remoteJid) {
+      // Нет сохранённого jid — пробуем напрямую
+      try {
+        await waSocket.sendMessage(userId, { text });
+        console.log("✅ Отправлено напрямую на:", userId);
+      } catch(e) {
+        console.error("❌ Прямая отправка не удалась:", e.message);
+      }
       return;
-    } catch (err1) {
-      console.error("Ошибка отправки на", sendTo, ":", err1.message);
-
-      // Если не получилось и sendTo не равен userId — пробуем на оригинальный
-      if (sendTo !== userId) {
-        try {
-          await waSocket.sendMessage(userId, { text });
-          console.log("✅ Отправлено на оригинальный:", userId);
-          return;
-        } catch (err2) {
-          console.error("Ошибка отправки на", userId, ":", err2.message);
-        }
-      }
-
-      // Последняя попытка — если есть маппинг наоборот
-      const allKeys = Object.keys(lidToJid);
-      for (const k of allKeys) {
-        if (lidToJid[k] === userId || k === userId) {
-          try {
-            await waSocket.sendMessage(lidToJid[k], { text });
-            console.log("✅ Отправлено через резервный маппинг:", lidToJid[k]);
-            return;
-          } catch(e) {}
-        }
-      }
-
-      console.error("❌ Не удалось отправить сообщение!");
     }
+
+    // Способ 1: отправляем на remoteJid
+    try {
+      await waSocket.sendMessage(info.remoteJid, { text });
+      console.log("✅ Отправлено на remoteJid:", info.remoteJid);
+      return;
+    } catch (e1) {
+      console.error("❌ remoteJid не сработал:", e1.message);
+    }
+
+    // Способ 2: reply на последнее сообщение
+    if (info.msgKey) {
+      try {
+        await waSocket.sendMessage(
+          info.remoteJid,
+          { text },
+          { quoted: { key: info.msgKey, message: { conversation: "." } } }
+        );
+        console.log("✅ Отправлено через reply");
+        return;
+      } catch (e2) {
+        console.error("❌ reply не сработал:", e2.message);
+      }
+    }
+
+    console.error("❌ Все способы не сработали для:", userId);
 
   } catch (err) {
     console.error("sendWA критическая ошибка:", err.message);
@@ -232,6 +215,8 @@ async function sendWA(userId, text) {
 async function sendMsg(channel, userId, text) {
   if (channel === "wa") return await sendWA(userId, text);
 }
+
+// ==================== ТАЙМЕР ====================
 
 function resetTimer(userId) {
   if (sessionTimers[userId]) clearTimeout(sessionTimers[userId]);
@@ -244,11 +229,11 @@ function resetTimer(userId) {
     if (!sess || sess.step === "idle") return;
     if (sess.bookingId && pendingPayments[sess.bookingId]) {
       const b = pendingPayments[sess.bookingId];
-      if (bookings[b.date] && bookings[b.date][b.group]) {
+      if (bookings[b.date]?.[b.group]) {
         bookings[b.date][b.group] = Math.max(0, bookings[b.date][b.group] - b.count);
       }
       delete pendingPayments[sess.bookingId];
-      await notifyTelegram("Бронь " + sess.bookingId + " отменена (таймаут)");
+      await notifyTelegram(`Бронь ${sess.bookingId} отменена (таймаут)`);
       await sendMsg(sess.channel, userId,
         "Время ожидания истекло ⏰\n\nБронь отменена.\nПишите снова если хотите забронировать!"
       );
@@ -257,6 +242,8 @@ function resetTimer(userId) {
     delete sessionTimers[userId];
   }, CONFIG.SESSION_TIMEOUT);
 }
+
+// ==================== РОУТЫ ====================
 
 app.get("/", (req, res) => {
   res.send(
@@ -280,7 +267,7 @@ app.get("/qr", async (req, res) => {
   res.send(
     "<html><body style='text-align:center;padding:40px'>"
     + "<h2>Сканируйте QR WhatsApp</h2>"
-    + "<img src='" + qrImage + "' style='width:300px'/>"
+    + `<img src='${qrImage}' style='width:300px'/>`
     + "<p>Страница обновится автоматически</p>"
     + "<script>setTimeout(()=>location.reload(),25000)</script>"
     + "</body></html>"
@@ -308,10 +295,7 @@ app.post("/tg_webhook", async (req, res) => {
           const b   = pendingPayments[id];
           const inf = CONFIG.PRICES[b.duration];
           const grp = CONFIG.GROUPS[b.group];
-          list += "ID: " + id + "\nДата: " + formatDate(b.date)
-            + "\nВремя: " + grp.label + "\nДосок: " + b.count
-            + " | " + inf.label + "\nСумма: " + b.total + " руб\n"
-            + "/confirm_" + id + " | /cancel_" + id + "\n\n";
+          list += `ID: ${id}\nДата: ${formatDate(b.date)}\nВремя: ${grp.label}\nДосок: ${b.count} | ${inf.label}\nСумма: ${b.total} руб\n/confirm_${id} | /cancel_${id}\n\n`;
         }
         await notifyTelegram(list);
       }
@@ -322,7 +306,7 @@ app.post("/tg_webhook", async (req, res) => {
       const bookingId = text.replace("/confirm_", "");
       const booking   = pendingPayments[bookingId];
       if (!booking) {
-        await notifyTelegram("Бронь " + bookingId + " не найдена");
+        await notifyTelegram(`Бронь ${bookingId} не найдена`);
         return res.sendStatus(200);
       }
       confirmedBookings[booking.userId] = {
@@ -340,17 +324,17 @@ app.post("/tg_webhook", async (req, res) => {
       }
       const grp = CONFIG.GROUPS[booking.group];
       await sendMsg(booking.channel, booking.userId,
-        "✅ Оплата подтверждена!\n\n"
-        + "Номер брони: " + bookingId + "\n"
-        + "Дата: " + formatDate(booking.date) + "\n"
-        + "Время: " + grp.label + "\n"
-        + "Приходите " + grp.arrive + "\n\n"
-        + "Инструктор: " + CONFIG.INSTRUCTOR + "\n"
-        + "Тел: " + CONFIG.PHONE + "\n\nЖдём вас! 🏄"
+        `✅ Оплата подтверждена!\n\n`
+        + `Номер брони: ${bookingId}\n`
+        + `Дата: ${formatDate(booking.date)}\n`
+        + `Время: ${grp.label}\n`
+        + `Приходите ${grp.arrive}\n\n`
+        + `Инструктор: ${CONFIG.INSTRUCTOR}\n`
+        + `Тел: ${CONFIG.PHONE}\n\nЖдём вас! 🏄`
       );
       delete pendingPayments[bookingId];
       sessions[booking.userId] = { step: "idle", channel: booking.channel };
-      await notifyTelegram("Бронь " + bookingId + " подтверждена ✅");
+      await notifyTelegram(`Бронь ${bookingId} подтверждена ✅`);
       return res.sendStatus(200);
     }
 
@@ -358,20 +342,20 @@ app.post("/tg_webhook", async (req, res) => {
       const bookingId = text.replace("/cancel_", "");
       const booking   = pendingPayments[bookingId];
       if (!booking) {
-        await notifyTelegram("Бронь " + bookingId + " не найдена");
+        await notifyTelegram(`Бронь ${bookingId} не найдена`);
         return res.sendStatus(200);
       }
-      if (bookings[booking.date] && bookings[booking.date][booking.group]) {
+      if (bookings[booking.date]?.[booking.group]) {
         bookings[booking.date][booking.group] = Math.max(
           0, bookings[booking.date][booking.group] - booking.count
         );
       }
       await sendMsg(booking.channel, booking.userId,
-        "❌ Оплата не прошла.\n\nПо вопросам: " + CONFIG.PHONE
+        `❌ Оплата не прошла.\n\nПо вопросам: ${CONFIG.PHONE}`
       );
       delete pendingPayments[bookingId];
       sessions[booking.userId] = { step: "idle", channel: booking.channel };
-      await notifyTelegram("Бронь " + bookingId + " отменена ❌");
+      await notifyTelegram(`Бронь ${bookingId} отменена ❌`);
       return res.sendStatus(200);
     }
 
@@ -381,6 +365,8 @@ app.post("/tg_webhook", async (req, res) => {
     res.sendStatus(500);
   }
 });
+
+// ==================== WHATSAPP ====================
 
 async function startWhatsApp() {
   try {
@@ -424,37 +410,18 @@ async function startWhatsApp() {
 
     waSocket.ev.on("creds.update", saveCreds);
 
-    // ========== СОХРАНЯЕМ МАППИНГ КОНТАКТОВ ==========
-    waSocket.ev.on("contacts.update", (contacts) => {
-      for (const c of contacts) {
-        if (c.id && c.lid) {
-          lidToJid[c.lid] = c.id;
-          console.log("Контакт обновлён:", c.lid, "->", c.id);
-        }
-      }
-    });
-
-    waSocket.ev.on("contacts.upsert", (contacts) => {
-      for (const c of contacts) {
-        if (c.id && c.lid) {
-          lidToJid[c.lid] = c.id;
-          console.log("Контакт добавлен:", c.lid, "->", c.id);
-        }
-      }
-    });
-
     waSocket.ev.on("messages.upsert", async (m) => {
       try {
         if (m.type !== "notify") return;
         if (!m.messages) return;
 
         for (const msg of m.messages) {
-          const jid = msg.key.remoteJid || "";
+          const remoteJid = msg.key.remoteJid || "";
 
           if (msg.messageStubType) continue;
           if (msg.key.fromMe) continue;
-          if (jid.endsWith("@g.us")) continue;
-          if (jid === "status@broadcast") continue;
+          if (remoteJid.endsWith("@g.us")) continue;
+          if (remoteJid === "status@broadcast") continue;
           if (!msg.message) continue;
 
           const text =
@@ -463,67 +430,29 @@ async function startWhatsApp() {
             "";
 
           console.log("=== ВХОДЯЩЕЕ ===");
-          console.log("jid:", jid);
-          console.log("participant:", msg.key.participant || "нет");
+          console.log("remoteJid:", remoteJid);
+          console.log("pushName:", msg.pushName || "нет");
           console.log("text:", text || "(нет текста)");
           console.log("================");
 
-          // ===== ОПРЕДЕЛЯЕМ userId И СОХРАНЯЕМ МАППИНГ =====
-          let userId = jid;
+          // userId = remoteJid (как пришло — так и отвечаем)
+          const userId = remoteJid;
 
-          if (jid.endsWith("@lid")) {
-            // Вариант 1: уже есть в маппинге
-            if (lidToJid[jid]) {
-              userId = lidToJid[jid];
-              console.log("Маппинг найден:", jid, "->", userId);
-            }
-            // Вариант 2: participant содержит реальный номер
-            else if (msg.key.participant && msg.key.participant.endsWith("@s.whatsapp.net")) {
-              userId = msg.key.participant;
-              lidToJid[jid] = userId;
-              console.log("Из participant:", jid, "->", userId);
-            }
-            // Вариант 3: ищем в данных сообщения
-            else if (msg.participant && msg.participant.endsWith("@s.whatsapp.net")) {
-              userId = msg.participant;
-              lidToJid[jid] = userId;
-              console.log("Из msg.participant:", jid, "->", userId);
-            }
-            // Вариант 4: пробуем через onWhatsApp
-            else {
-              const lidNum = jid.replace("@lid", "");
-              if (/^\d+$/.test(lidNum)) {
-                try {
-                  const results = await waSocket.onWhatsApp(lidNum + "@s.whatsapp.net");
-                  if (results && results.length > 0 && results[0].exists) {
-                    userId = results[0].jid;
-                    lidToJid[jid] = userId;
-                    console.log("onWhatsApp:", jid, "->", userId);
-                  } else {
-                    // Оставляем @lid — попытаемся отправить прямо на него
-                    userId = jid;
-                    console.log("Используем @lid напрямую:", userId);
-                  }
-                } catch (e) {
-                  userId = jid;
-                  console.log("onWhatsApp ошибка, используем @lid:", e.message);
-                }
-              }
-            }
-          }
+          // Сохраняем jid и ключ сообщения для ответа
+          userInfo[userId] = {
+            remoteJid: remoteJid,
+            msgKey:    msg.key,
+          };
 
-          console.log(">>> userId для сессии:", userId);
+          console.log(">>> userId:", userId);
 
-          // Читаем сообщение
           try { await waSocket.readMessages([msg.key]); } catch (e) {}
 
-          // Фото/документ
           if (msg.message?.imageMessage || msg.message?.documentMessage) {
             await handleReceiptPhoto({ channel: "wa", userId });
             continue;
           }
 
-          // Текст
           if (text && text.trim().length > 0) {
             await handleMessage({ channel: "wa", userId, text: text.trim() });
           }
@@ -539,6 +468,8 @@ async function startWhatsApp() {
   }
 }
 
+// ==================== ЛОГИКА БОТА ====================
+
 async function handleMessage({ channel, userId, text }) {
   try {
     const low = text.toLowerCase().trim();
@@ -553,11 +484,11 @@ async function handleMessage({ channel, userId, text }) {
       const cb  = confirmedBookings[userId];
       const grp = CONFIG.GROUPS[cb.group];
       return await sendMsg(channel, userId,
-        "У вас есть подтверждённая бронь! ✅\n\n"
-        + "Номер: " + cb.bookingId + "\n"
-        + "Дата: " + formatDate(cb.date) + "\n"
-        + "Время: " + grp.label + "\n\n"
-        + "По вопросам: " + CONFIG.PHONE
+        `У вас есть подтверждённая бронь! ✅\n\n`
+        + `Номер: ${cb.bookingId}\n`
+        + `Дата: ${formatDate(cb.date)}\n`
+        + `Время: ${grp.label}\n\n`
+        + `По вопросам: ${CONFIG.PHONE}`
       );
     }
 
@@ -628,12 +559,12 @@ async function handleMessage({ channel, userId, text }) {
     }
 
     return await sendMsg(channel, userId,
-      "Привет! 👋\n\n"
-      + "Я помогаю с арендой сапбордов 🏄\n\n"
-      + "Напишите:\n"
-      + "• *Хочу забронировать* — для брони\n"
-      + "• *Цены* — узнать стоимость\n\n"
-      + "По вопросам: " + CONFIG.PHONE
+      `Привет! 👋\n\n`
+      + `Я помогаю с арендой сапбордов 🏄\n\n`
+      + `Напишите:\n`
+      + `• *Хочу забронировать* — для брони\n`
+      + `• *Цены* — узнать стоимость\n\n`
+      + `По вопросам: ${CONFIG.PHONE}`
     );
 
   } catch (err) {
@@ -663,7 +594,7 @@ async function stepAskBook({ channel, userId, low, s }) {
     return await sendMsg(channel, userId, "Хорошо! Если понадобится — пишите 😊");
   }
 
-    const count = extractNumber(low);
+  const count = extractNumber(low);
   if (count) {
     s.count = count;
     s.step  = "wait_date";
@@ -678,7 +609,9 @@ async function stepAskBook({ channel, userId, low, s }) {
 async function stepCount({ channel, userId, low, s }) {
   const n = extractNumber(low);
   if (!n || n < 1 || n > CONFIG.CAPACITY) {
-    return await sendMsg(channel, userId, "Введите число от 1 до " + CONFIG.CAPACITY);
+    return await sendMsg(channel, userId,
+      `Введите число от 1 до ${CONFIG.CAPACITY}`
+    );
   }
   s.count = n;
   s.step  = "wait_date";
@@ -691,11 +624,11 @@ async function askDate(channel, userId) {
   const d1 = new Date(today); d1.setDate(d1.getDate() + 1);
   const d2 = new Date(today); d2.setDate(d2.getDate() + 2);
   return await sendMsg(channel, userId,
-    "📅 На какую дату?\n\n"
-    + "• Сегодня — " + formatDate(formatISO(today)) + "\n"
-    + "• Завтра — " + formatDate(formatISO(d1)) + "\n"
-    + "• Послезавтра — " + formatDate(formatISO(d2)) + "\n\n"
-    + "Или напишите дату: 25.07"
+    `📅 На какую дату?\n\n`
+    + `• Сегодня — ${formatDate(formatISO(today))}\n`
+    + `• Завтра — ${formatDate(formatISO(d1))}\n`
+    + `• Послезавтра — ${formatDate(formatISO(d2))}\n\n`
+    + `Или напишите дату: 25.07`
   );
 }
 
@@ -732,7 +665,9 @@ async function stepDate({ channel, userId, low, s }) {
   const dateObj = new Date(date);
   dateObj.setHours(0, 0, 0, 0);
   if (dateObj < today) {
-    return await sendMsg(channel, userId, "Эта дата уже прошла ❌\nВведите будущую дату.");
+    return await sendMsg(channel, userId,
+      "Эта дата уже прошла ❌\nВведите будущую дату."
+    );
   }
 
   const free1 = CONFIG.CAPACITY - getBooked(date, "1");
@@ -742,13 +677,13 @@ async function stepDate({ channel, userId, low, s }) {
     const next = getNextAvailableDate(date);
     if (next) {
       return await sendMsg(channel, userId,
-        "На " + formatDate(date) + " нет свободных досок 😔\n\n"
-        + "Ближайшие места на " + formatDate(next) + "\n"
-        + "Забронировать на эту дату?"
+        `На ${formatDate(date)} нет свободных досок 😔\n\n`
+        + `Ближайшие места на ${formatDate(next)}\n`
+        + `Забронировать на эту дату?`
       );
     }
     return await sendMsg(channel, userId,
-      "К сожалению мест нет 😔\nПопробуйте другую дату."
+            "К сожалению мест нет 😔\nПопробуйте другую дату."
     );
   }
 
@@ -758,21 +693,21 @@ async function stepDate({ channel, userId, low, s }) {
   const show1 = free1 >= s.count
     ? "1️⃣ — с 4:00 до 5:00"
     : free1 > 0
-    ? "1️⃣ — с 4:00 до 5:00 (доступно " + free1 + " досок)"
+    ? `1️⃣ — с 4:00 до 5:00 (доступно ${free1} досок)`
     : "1️⃣ — с 4:00 до 5:00 ❌ мест нет";
 
   const show2 = free2 >= s.count
     ? "2️⃣ — с 5:00 до 6:00"
     : free2 > 0
-    ? "2️⃣ — с 5:00 до 6:00 (доступно " + free2 + " досок)"
+    ? `2️⃣ — с 5:00 до 6:00 (доступно ${free2} досок)`
     : "2️⃣ — с 5:00 до 6:00 ❌ мест нет";
 
   return await sendMsg(channel, userId,
-    "📅 " + formatDate(date) + "\n\n"
-    + "Выберите время:\n\n"
-    + show1 + "\n"
-    + show2 + "\n\n"
-    + "Напишите 1 или 2"
+    `📅 ${formatDate(date)}\n\n`
+    + `Выберите время:\n\n`
+    + `${show1}\n`
+    + `${show2}\n\n`
+    + `Напишите 1 или 2`
   );
 }
 
@@ -795,9 +730,9 @@ async function stepGroup({ channel, userId, low, s }) {
     if (otherFree >= s.count) {
       const otherLabel = CONFIG.GROUPS[other].label;
       return await sendMsg(channel, userId,
-        "В это время мест нет 😔\n\n"
-        + "Есть места в " + otherLabel + "\n"
-        + "Напишите " + other + " чтобы выбрать."
+        `В это время мест нет 😔\n\n`
+        + `Есть места в ${otherLabel}\n`
+        + `Напишите ${other} чтобы выбрать.`
       );
     }
     return await sendMsg(channel, userId,
@@ -807,9 +742,9 @@ async function stepGroup({ channel, userId, low, s }) {
 
   if (free < s.count) {
     return await sendMsg(channel, userId,
-      "Доступно только " + free + " досок.\n"
-      + "Хотите забронировать " + free + "?\n"
-      + "Или выберите другое время (напишите 1 или 2)"
+      `Доступно только ${free} досок.\n`
+      + `Хотите забронировать ${free}?\n`
+      + `Или выберите другое время (напишите 1 или 2)`
     );
   }
 
@@ -817,19 +752,19 @@ async function stepGroup({ channel, userId, low, s }) {
   s.step  = "wait_duration";
 
   return await sendMsg(channel, userId,
-    "⏱ На сколько времени?\n\n"
-    + "1️⃣ — 1 час (800 руб)\n"
-    + "2️⃣ — 1.5 часа (1000 руб)\n"
-    + "3️⃣ — 2 часа (1200 руб)\n\n"
-    + "Напишите 1, 2 или 3"
+    `⏱ На сколько времени?\n\n`
+    + `1️⃣ — 1 час (800 руб)\n`
+    + `2️⃣ — 1.5 часа (1000 руб)\n`
+    + `3️⃣ — 2 часа (1200 руб)\n\n`
+    + `Напишите 1, 2 или 3`
   );
 }
 
 async function stepDuration({ channel, userId, low, s }) {
   let duration = null;
-  if (low === "1" || low.includes("1 час") || low.includes("один час"))  duration = "1";
-  if (low === "2" || low.includes("1.5")   || low.includes("полтора"))   duration = "1.5";
-  if (low === "3" || low.includes("2 часа") || low.includes("два часа")) duration = "2";
+  if (low === "1" || low.includes("1 час")  || low.includes("один час"))  duration = "1";
+  if (low === "2" || low.includes("1.5")    || low.includes("полтора"))   duration = "1.5";
+  if (low === "3" || low.includes("2 часа") || low.includes("два часа"))  duration = "2";
 
   if (!duration) {
     return await sendMsg(channel, userId,
@@ -845,16 +780,16 @@ async function stepDuration({ channel, userId, low, s }) {
   const grp  = CONFIG.GROUPS[s.group];
 
   return await sendMsg(channel, userId,
-    "📋 Ваш заказ:\n\n"
-    + "📅 Дата: "  + formatDate(s.date) + "\n"
-    + "⏰ Время: " + grp.label + "\n"
-    + "🏄 Досок: " + s.count + "\n"
-    + "⏱ Длит: "  + info.label + "\n"
-    + "💰 Итого: " + s.total + " руб\n\n"
-    + "📌 Условия:\n"
-    + "• При неявке оплата не возвращается\n"
-    + "• При плохой погоде — перенос или возврат\n\n"
-    + "Подтверждаете бронь?\nОтветьте: *Да* или *Нет*"
+    `📋 Ваш заказ:\n\n`
+    + `📅 Дата: ${formatDate(s.date)}\n`
+    + `⏰ Время: ${grp.label}\n`
+    + `🏄 Досок: ${s.count}\n`
+    + `⏱ Длит: ${info.label}\n`
+    + `💰 Итого: ${s.total} руб\n\n`
+    + `📌 Условия:\n`
+    + `• При неявке оплата не возвращается\n`
+    + `• При плохой погоде — перенос или возврат\n\n`
+    + `Подтверждаете бронь?\nОтветьте: *Да* или *Нет*`
   );
 }
 
@@ -887,29 +822,29 @@ async function stepConfirm({ channel, userId, low, s }) {
     };
 
     await notifyTelegram(
-      "🆕 НОВАЯ БРОНЬ!\n\n"
-      + "ID: "    + bookingId + "\n"
-      + "Дата: "  + formatDate(s.date) + "\n"
-      + "Время: " + grp.label + "\n"
-      + "Досок: " + s.count + "\n"
-      + "Длит: "  + info.label + "\n"
-      + "Сумма: " + s.total + " руб\n\n"
-      + "✅ /confirm_" + bookingId + "\n"
-      + "❌ /cancel_"  + bookingId
+      `🆕 НОВАЯ БРОНЬ!\n\n`
+      + `ID: ${bookingId}\n`
+      + `Дата: ${formatDate(s.date)}\n`
+      + `Время: ${grp.label}\n`
+      + `Досок: ${s.count}\n`
+      + `Длит: ${info.label}\n`
+      + `Сумма: ${s.total} руб\n\n`
+      + `✅ /confirm_${bookingId}\n`
+      + `❌ /cancel_${bookingId}`
     );
 
     return await sendMsg(channel, userId,
-      "Отлично! Осталось оплатить 💳\n\n"
-      + "Номер брони: *" + bookingId + "*\n\n"
-      + "Переведите *" + s.total + " руб*:\n"
-      + "📱 " + CONFIG.PHONE + " (Сбербанк / СБП)\n\n"
-      + "После оплаты отправьте *фото чека* 📸\n\n"
-      + "⏰ Бронь действует 1 час."
+      `Отлично! Осталось оплатить 💳\n\n`
+      + `Номер брони: *${bookingId}*\n\n`
+      + `Переведите *${s.total} руб*:\n`
+      + `📱 ${CONFIG.PHONE} (Сбербанк / СБП)\n\n`
+      + `После оплаты отправьте *фото чека* 📸\n\n`
+      + `⏰ Бронь действует 1 час.`
     );
   }
 
   if (no.some(w => low.includes(w))) {
-    if (bookings[s.date] && bookings[s.date][s.group]) {
+    if (bookings[s.date]?.[s.group]) {
       bookings[s.date][s.group] = Math.max(0, bookings[s.date][s.group] - s.count);
     }
     sessions[userId] = { step: "idle", channel };
@@ -918,14 +853,16 @@ async function stepConfirm({ channel, userId, low, s }) {
     );
   }
 
-  return await sendMsg(channel, userId, "Ответьте: *Да* или *Нет*");
+  return await sendMsg(channel, userId,
+    "Ответьте: *Да* или *Нет*"
+  );
 }
 
 async function handleReceiptPhoto({ channel, userId }) {
   const s = sessions[userId];
   if (!s || s.step !== "wait_receipt") {
     return await sendMsg(channel, userId,
-      "Спасибо за фото! 📸\nПо вопросам: " + CONFIG.PHONE
+      `Спасибо за фото! 📸\nПо вопросам: ${CONFIG.PHONE}`
     );
   }
 
@@ -933,14 +870,14 @@ async function handleReceiptPhoto({ channel, userId }) {
   const grp  = CONFIG.GROUPS[s.group];
 
   await notifyTelegram(
-    "📸 ЧЕК ПОЛУЧЕН!\n\n"
-    + "ID: "    + s.bookingId + "\n"
-    + "Дата: "  + formatDate(s.date) + "\n"
-    + "Время: " + grp.label + "\n"
-    + "Досок: " + s.count + "\n"
-    + "Сумма: " + s.total + " руб\n\n"
-    + "✅ /confirm_" + s.bookingId + "\n"
-    + "❌ /cancel_"  + s.bookingId
+    `📸 ЧЕК ПОЛУЧЕН!\n\n`
+    + `ID: ${s.bookingId}\n`
+    + `Дата: ${formatDate(s.date)}\n`
+    + `Время: ${grp.label}\n`
+    + `Досок: ${s.count}\n`
+    + `Сумма: ${s.total} руб\n\n`
+    + `✅ /confirm_${s.bookingId}\n`
+    + `❌ /cancel_${s.bookingId}`
   );
 
   s.step = "waiting_confirm";
@@ -951,18 +888,19 @@ async function handleReceiptPhoto({ channel, userId }) {
   }
 
   return await sendMsg(channel, userId,
-    "Чек получен! 📸✅\n\n"
-    + "Бронь за вами закреплена!\n\n"
-    + "Оплату проверит *" + CONFIG.INSTRUCTOR + "* (инструктор)\n"
-    + "Обычно это занимает несколько минут.\n\n"
-    + "По всем вопросам: " + CONFIG.PHONE
+    `Чек получен! 📸✅\n\n`
+    + `Бронь за вами закреплена!\n\n`
+    + `Оплату проверит *${CONFIG.INSTRUCTOR}* (инструктор)\n`
+    + `Обычно это занимает несколько минут.\n\n`
+    + `По всем вопросам: ${CONFIG.PHONE}`
   );
 }
 
 // ==================== ЗАПУСК ====================
+
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, async () => {
-  console.log("✅ Сервер запущен на порту " + PORT);
+  console.log(`✅ Сервер запущен на порту ${PORT}`);
   await notifyTelegram("🚀 Сервер запущен! Бот готов к работе.");
   startWhatsApp();
 });
