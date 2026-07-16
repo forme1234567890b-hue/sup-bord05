@@ -153,13 +153,79 @@ async function notifyTelegram(text) {
   }
 }
 
+// ========== ИСПРАВЛЕННАЯ ФУНКЦИЯ ОТПРАВКИ ==========
 async function sendWA(userId, text) {
   try {
-    if (!waSocket) { console.error("waSocket не готов!"); return; }
-    const realJid = lidToJid[userId] || userId;
-    await waSocket.sendMessage(realJid, { text: text });
+    if (!waSocket) {
+      console.error("waSocket не готов!");
+      return;
+    }
+
+    // Определяем реальный JID для отправки
+    let sendTo = userId;
+
+    // Если это @lid — пробуем найти реальный номер
+    if (userId.endsWith("@lid")) {
+      if (lidToJid[userId]) {
+        sendTo = lidToJid[userId];
+        console.log("Используем маппинг:", userId, "->", sendTo);
+      } else {
+        // Пробуем через onWhatsApp
+        const lidNum = userId.replace("@lid", "");
+        try {
+          const results = await waSocket.onWhatsApp(lidNum + "@s.whatsapp.net");
+          if (results && results.length > 0 && results[0].exists) {
+            sendTo = results[0].jid;
+            lidToJid[userId] = sendTo;
+            console.log("onWhatsApp нашёл:", sendTo);
+          }
+        } catch(e) {
+          console.log("onWhatsApp ошибка:", e.message);
+        }
+      }
+    }
+
+    console.log("=== ОТПРАВЛЯЕМ ===");
+    console.log("userId:", userId);
+    console.log("sendTo:", sendTo);
+    console.log("text:", text.substring(0, 60));
+
+    // Пробуем отправить
+    try {
+      await waSocket.sendMessage(sendTo, { text });
+      console.log("✅ Отправлено на:", sendTo);
+      return;
+    } catch (err1) {
+      console.error("Ошибка отправки на", sendTo, ":", err1.message);
+
+      // Если не получилось и sendTo не равен userId — пробуем на оригинальный
+      if (sendTo !== userId) {
+        try {
+          await waSocket.sendMessage(userId, { text });
+          console.log("✅ Отправлено на оригинальный:", userId);
+          return;
+        } catch (err2) {
+          console.error("Ошибка отправки на", userId, ":", err2.message);
+        }
+      }
+
+      // Последняя попытка — если есть маппинг наоборот
+      const allKeys = Object.keys(lidToJid);
+      for (const k of allKeys) {
+        if (lidToJid[k] === userId || k === userId) {
+          try {
+            await waSocket.sendMessage(lidToJid[k], { text });
+            console.log("✅ Отправлено через резервный маппинг:", lidToJid[k]);
+            return;
+          } catch(e) {}
+        }
+      }
+
+      console.error("❌ Не удалось отправить сообщение!");
+    }
+
   } catch (err) {
-    console.error("WA send error:", err.message);
+    console.error("sendWA критическая ошибка:", err.message);
   }
 }
 
@@ -219,7 +285,9 @@ app.get("/qr", async (req, res) => {
     + "<script>setTimeout(()=>location.reload(),25000)</script>"
     + "</body></html>"
   );
-});app.post("/tg_webhook", async (req, res) => {
+});
+
+app.post("/tg_webhook", async (req, res) => {
   try {
     const msg = req.body.message;
     if (!msg || !msg.text) return res.sendStatus(200);
@@ -356,11 +424,12 @@ async function startWhatsApp() {
 
     waSocket.ev.on("creds.update", saveCreds);
 
+    // ========== СОХРАНЯЕМ МАППИНГ КОНТАКТОВ ==========
     waSocket.ev.on("contacts.update", (contacts) => {
       for (const c of contacts) {
         if (c.id && c.lid) {
           lidToJid[c.lid] = c.id;
-          console.log("Контакт сохранён:", c.lid, "->", c.id);
+          console.log("Контакт обновлён:", c.lid, "->", c.id);
         }
       }
     });
@@ -393,53 +462,74 @@ async function startWhatsApp() {
             msg.message?.extendedTextMessage?.text ||
             "";
 
-          console.log("=== СООБЩЕНИЕ ===");
+          console.log("=== ВХОДЯЩЕЕ ===");
           console.log("jid:", jid);
+          console.log("participant:", msg.key.participant || "нет");
           console.log("text:", text || "(нет текста)");
-          console.log("=================");
+          console.log("================");
 
+          // ===== ОПРЕДЕЛЯЕМ userId И СОХРАНЯЕМ МАППИНГ =====
           let userId = jid;
 
           if (jid.endsWith("@lid")) {
+            // Вариант 1: уже есть в маппинге
             if (lidToJid[jid]) {
               userId = lidToJid[jid];
-            } else if (msg.key.participant && msg.key.participant.endsWith("@s.whatsapp.net")) {
+              console.log("Маппинг найден:", jid, "->", userId);
+            }
+            // Вариант 2: participant содержит реальный номер
+            else if (msg.key.participant && msg.key.participant.endsWith("@s.whatsapp.net")) {
               userId = msg.key.participant;
               lidToJid[jid] = userId;
-            } else {
+              console.log("Из participant:", jid, "->", userId);
+            }
+            // Вариант 3: ищем в данных сообщения
+            else if (msg.participant && msg.participant.endsWith("@s.whatsapp.net")) {
+              userId = msg.participant;
+              lidToJid[jid] = userId;
+              console.log("Из msg.participant:", jid, "->", userId);
+            }
+            // Вариант 4: пробуем через onWhatsApp
+            else {
               const lidNum = jid.replace("@lid", "");
               if (/^\d+$/.test(lidNum)) {
-                const tryJid = lidNum + "@s.whatsapp.net";
                 try {
-                  const results = await waSocket.onWhatsApp(tryJid);
+                  const results = await waSocket.onWhatsApp(lidNum + "@s.whatsapp.net");
                   if (results && results.length > 0 && results[0].exists) {
                     userId = results[0].jid;
                     lidToJid[jid] = userId;
+                    console.log("onWhatsApp:", jid, "->", userId);
                   } else {
+                    // Оставляем @lid — попытаемся отправить прямо на него
                     userId = jid;
+                    console.log("Используем @lid напрямую:", userId);
                   }
                 } catch (e) {
                   userId = jid;
+                  console.log("onWhatsApp ошибка, используем @lid:", e.message);
                 }
               }
             }
           }
 
-          console.log(">>> Обрабатываем от:", userId);
+          console.log(">>> userId для сессии:", userId);
 
+          // Читаем сообщение
           try { await waSocket.readMessages([msg.key]); } catch (e) {}
 
+          // Фото/документ
           if (msg.message?.imageMessage || msg.message?.documentMessage) {
             await handleReceiptPhoto({ channel: "wa", userId });
             continue;
           }
 
+          // Текст
           if (text && text.trim().length > 0) {
             await handleMessage({ channel: "wa", userId, text: text.trim() });
           }
         }
       } catch (err) {
-        console.error("Ошибка WA сообщения:", err);
+        console.error("Ошибка обработки сообщения:", err);
       }
     });
 
@@ -573,7 +663,7 @@ async function stepAskBook({ channel, userId, low, s }) {
     return await sendMsg(channel, userId, "Хорошо! Если понадобится — пишите 😊");
   }
 
-  const count = extractNumber(low);
+    const count = extractNumber(low);
   if (count) {
     s.count = count;
     s.step  = "wait_date";
@@ -651,15 +741,10 @@ async function stepDate({ channel, userId, low, s }) {
   if (free1 <= 0 && free2 <= 0) {
     const next = getNextAvailableDate(date);
     if (next) {
-      s.date = next;
-      s.step = "wait_group";
       return await sendMsg(channel, userId,
         "На " + formatDate(date) + " нет свободных досок 😔\n\n"
-        + "Ближайшая дата: " + formatDate(next) + "\n\n"
-        + "Выберите время:\n"
-        + "1️⃣ — с 4:00 до 5:00\n"
-        + "2️⃣ — с 5:00 до 6:00\n\n"
-        + "Напишите 1 или 2"
+        + "Ближайшие места на " + formatDate(next) + "\n"
+        + "Забронировать на эту дату?"
       );
     }
     return await sendMsg(channel, userId,
@@ -689,7 +774,9 @@ async function stepDate({ channel, userId, low, s }) {
     + show2 + "\n\n"
     + "Напишите 1 или 2"
   );
-}async function stepGroup({ channel, userId, low, s }) {
+}
+
+async function stepGroup({ channel, userId, low, s }) {
   let group = null;
   if (low === "1" || low.includes("первую") || low.includes("первая") || low.includes("4:00")) group = "1";
   if (low === "2" || low.includes("вторую") || low.includes("вторая") || low.includes("5:00")) group = "2";
@@ -872,6 +959,7 @@ async function handleReceiptPhoto({ channel, userId }) {
   );
 }
 
+// ==================== ЗАПУСК ====================
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, async () => {
   console.log("✅ Сервер запущен на порту " + PORT);
