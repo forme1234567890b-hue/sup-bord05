@@ -13,7 +13,6 @@ import pino from "pino";
 const app = express();
 app.use(express.json());
 
-// ==================== КОНФИГ ====================
 const CONFIG = {
   TG_TOKEN:   "8878884686:AAGmS94pp2nhkQrHj8hkx8LIbBRmtdn92Xk",
   TG_CHAT_ID: "5208172896",
@@ -32,17 +31,15 @@ const CONFIG = {
   SESSION_TIMEOUT: 60 * 60 * 1000,
 };
 
-// ==================== ХРАНИЛИЩА ====================
 const bookings          = {};
 const sessions          = {};
 const pendingPayments   = {};
 const sessionTimers     = {};
 const confirmedBookings = {};
-const lidToJid          = {}; // ✅ маппинг LID -> реальный номер
+const lidToJid          = {};
 let   lastQR            = null;
 let   waSocket          = null;
 
-// ==================== СЛОВА ====================
 const SAP_WORDS = [
   "бронь","бронировать","забронировать","сап","сапборд",
   "sup","аренда","хочу","записаться","доска","доски","board","сапы",
@@ -71,7 +68,6 @@ const GREETING_REPLIES = [
   "وعليكم السلام",
 ];
 
-// ==================== УТИЛИТЫ ====================
 function getBooked(date, group) {
   if (!bookings[date]) return 0;
   if (!bookings[date][group]) return 0;
@@ -146,7 +142,6 @@ function getPricesText() {
   );
 }
 
-// ==================== TELEGRAM ====================
 async function notifyTelegram(text) {
   try {
     await axios.post(
@@ -158,20 +153,13 @@ async function notifyTelegram(text) {
   }
 }
 
-// ==================== ОТПРАВКА СООБЩЕНИЙ ====================
 async function sendWA(userId, text) {
   try {
-    if (!waSocket) {
-      console.error("waSocket не готов!");
-      return;
-    }
-
-    // ✅ Если в хранилище есть реальный JID для этого LID — используем его
+    if (!waSocket) { console.error("waSocket не готов!"); return; }
     const realJid = lidToJid[userId] || userId;
-
-    console.log("Отправляем сообщение ->", realJid, ":", text.substring(0, 50));
+    console.log("Отправляем ->", realJid, ":", text.substring(0, 50));
     await waSocket.sendMessage(realJid, { text: text });
-    console.log("Сообщение отправлено!");
+    console.log("Отправлено!");
   } catch (err) {
     console.error("WA send error:", err.message);
   }
@@ -181,7 +169,6 @@ async function sendMsg(channel, userId, text) {
   if (channel === "wa") return await sendWA(userId, text);
 }
 
-// ==================== ТАЙМЕР СЕССИИ ====================
 function resetTimer(userId) {
   if (sessionTimers[userId]) clearTimeout(sessionTimers[userId]);
   const s = sessions[userId];
@@ -197,25 +184,20 @@ function resetTimer(userId) {
         bookings[b.date][b.group] = Math.max(0, bookings[b.date][b.group] - b.count);
       }
       delete pendingPayments[sess.bookingId];
-      await notifyTelegram("Бронь " + sess.bookingId + " автоматически отменена (таймаут 1 час)");
+      await notifyTelegram("Бронь " + sess.bookingId + " отменена (таймаут)");
       await sendMsg(sess.channel, userId,
-        "Время ожидания истекло ⏰\n\n"
-        + "Ваша бронь была отменена так как не была завершена в течение 1 часа.\n"
-        + "Если хотите забронировать снова — просто напишите нам!"
+        "Время ожидания истекло ⏰\n\nБронь отменена.\nПишите снова если хотите забронировать!"
       );
     }
     sessions[userId] = { step: "idle", channel: sess.channel };
     delete sessionTimers[userId];
-    console.log("Сессия сброшена по таймауту:", userId);
   }, CONFIG.SESSION_TIMEOUT);
 }
 
-// ==================== EXPRESS МАРШРУТЫ ====================
 app.get("/", (req, res) => {
   res.send(
     "<html><body style='font-family:sans-serif;padding:40px'>"
-    + "<h1>SUP Board Bot</h1>"
-    + "<p>Сервер работает! ✅</p>"
+    + "<h1>SUP Board Bot</h1><p>Сервер работает! ✅</p>"
     + "<a href='/qr' style='font-size:18px'>Открыть QR WhatsApp</a>"
     + "</body></html>"
   );
@@ -225,8 +207,7 @@ app.get("/qr", async (req, res) => {
   if (!lastQR) {
     return res.send(
       "<html><body style='text-align:center;padding:40px'>"
-      + "<h2>✅ WhatsApp подключён!</h2>"
-      + "<p>Бот работает</p>"
+      + "<h2>✅ WhatsApp подключён!</h2><p>Бот работает</p>"
       + "<script>setTimeout(()=>location.reload(),10000)</script>"
       + "</body></html>"
     );
@@ -242,7 +223,6 @@ app.get("/qr", async (req, res) => {
   );
 });
 
-// ==================== TELEGRAM WEBHOOK ====================
 app.post("/tg_webhook", async (req, res) => {
   try {
     const msg = req.body.message;
@@ -250,12 +230,7 @@ app.post("/tg_webhook", async (req, res) => {
     const text = msg.text.trim();
 
     if (text === "/start" || text === "/help") {
-      await notifyTelegram(
-        "Команды бота:\n\n"
-        + "/bookings — список активных броней\n"
-        + "/confirm_ID — подтвердить оплату\n"
-        + "/cancel_ID — отменить бронь"
-      );
+      await notifyTelegram("Команды:\n/bookings — список броней\n/confirm_ID — подтвердить\n/cancel_ID — отменить");
       return res.sendStatus(200);
     }
 
@@ -269,12 +244,9 @@ app.post("/tg_webhook", async (req, res) => {
           const b   = pendingPayments[id];
           const inf = CONFIG.PRICES[b.duration];
           const grp = CONFIG.GROUPS[b.group];
-          list +=
-            "ID: " + id + "\n"
-            + "Дата: " + formatDate(b.date) + "\n"
-            + "Время: " + grp.label + "\n"
-            + "Досок: " + b.count + " | " + inf.label + "\n"
-            + "Сумма: " + b.total + " руб\n"
+          list += "ID: " + id + "\nДата: " + formatDate(b.date)
+            + "\nВремя: " + grp.label + "\nДосок: " + b.count
+            + " | " + inf.label + "\nСумма: " + b.total + " руб\n"
             + "/confirm_" + id + " | /cancel_" + id + "\n\n";
         }
         await notifyTelegram(list);
@@ -310,12 +282,11 @@ app.post("/tg_webhook", async (req, res) => {
         + "Время: " + grp.label + "\n"
         + "Приходите " + grp.arrive + "\n\n"
         + "Инструктор: " + CONFIG.INSTRUCTOR + "\n"
-        + "Тел: " + CONFIG.PHONE + "\n\n"
-        + "Ждём вас! 🏄"
+        + "Тел: " + CONFIG.PHONE + "\n\nЖдём вас! 🏄"
       );
       delete pendingPayments[bookingId];
       sessions[booking.userId] = { step: "idle", channel: booking.channel };
-      await notifyTelegram("Бронь " + bookingId + " подтверждена! Клиент уведомлён ✅");
+      await notifyTelegram("Бронь " + bookingId + " подтверждена ✅");
       return res.sendStatus(200);
     }
 
@@ -332,7 +303,7 @@ app.post("/tg_webhook", async (req, res) => {
         );
       }
       await sendMsg(booking.channel, booking.userId,
-        "❌ Оплата не прошла проверку.\n\nПо вопросам: " + CONFIG.PHONE
+        "❌ Оплата не прошла.\n\nПо вопросам: " + CONFIG.PHONE
       );
       delete pendingPayments[bookingId];
       sessions[booking.userId] = { step: "idle", channel: booking.channel };
@@ -347,13 +318,12 @@ app.post("/tg_webhook", async (req, res) => {
   }
 });
 
-// ==================== WHATSAPP ====================
 async function startWhatsApp() {
   try {
     const { state, saveCreds } = await useMultiFileAuthState("auth_info");
     const { version }          = await fetchLatestBaileysVersion();
 
-    console.log("Запускаем WhatsApp, версия Baileys:", version);
+    console.log("Запускаем WhatsApp, версия:", version);
 
     waSocket = makeWASocket({
       version,
@@ -366,49 +336,44 @@ async function startWhatsApp() {
 
     waSocket.ev.on("connection.update", async (update) => {
       const { connection, lastDisconnect, qr } = update;
-
       if (qr) {
         lastQR = qr;
-        console.log("QR готов! Зайдите на /qr чтобы отсканировать");
+        console.log("QR готов! Зайдите на /qr");
       }
-
       if (connection === "close") {
         lastQR = null;
         const code = new Boom(lastDisconnect?.error)?.output?.statusCode;
         console.log("Соединение закрыто, код:", code);
         if (code !== DisconnectReason.loggedOut) {
-          console.log("Переподключаемся через 3 секунды...");
+          console.log("Переподключаемся через 3 сек...");
           setTimeout(startWhatsApp, 3000);
         } else {
-          console.log("Вышли из аккаунта. Нужно заново сканировать QR.");
-          lastQR = null;
+          console.log("Вышли из аккаунта. Нужен новый QR.");
         }
       }
-
       if (connection === "open") {
         lastQR = null;
-        console.log("✅ WhatsApp подключён и готов к работе!");
+        console.log("✅ WhatsApp подключён!");
         await notifyTelegram("✅ WhatsApp бот подключён и работает!");
       }
     });
 
     waSocket.ev.on("creds.update", saveCreds);
 
-    // ✅ Сохраняем маппинг контактов LID -> реальный номер
     waSocket.ev.on("contacts.update", (contacts) => {
-      for (const contact of contacts) {
-        if (contact.id && contact.lid) {
-          lidToJid[contact.lid] = contact.id;
-          console.log("Контакт сохранён:", contact.lid, "->", contact.id);
+      for (const c of contacts) {
+        if (c.id && c.lid) {
+          lidToJid[c.lid] = c.id;
+          console.log("Контакт сохранён:", c.lid, "->", c.id);
         }
       }
     });
 
     waSocket.ev.on("contacts.upsert", (contacts) => {
-      for (const contact of contacts) {
-        if (contact.id && contact.lid) {
-          lidToJid[contact.lid] = contact.id;
-          console.log("Контакт добавлен:", contact.lid, "->", contact.id);
+      for (const c of contacts) {
+        if (c.id && c.lid) {
+          lidToJid[c.lid] = c.id;
+          console.log("Контакт добавлен:", c.lid, "->", c.id);
         }
       }
     });
@@ -422,65 +387,58 @@ async function startWhatsApp() {
           const jid = msg.key.remoteJid || "";
 
           if (msg.messageStubType) continue;
+          if (msg.key.fromMe) continue;
+          if (jid.endsWith("@g.us")) continue;
+          if (jid === "status@broadcast") continue;
+          if (!msg.message) continue;
 
           const text =
             msg.message?.conversation ||
             msg.message?.extendedTextMessage?.text ||
             "";
 
-          console.log("=== ВХОДЯЩЕЕ СООБЩЕНИЕ ===");
-          console.log("fromMe:", msg.key.fromMe);
+          console.log("=== СООБЩЕНИЕ ===");
           console.log("jid:", jid);
           console.log("participant:", msg.key.participant || "нет");
           console.log("text:", text || "(нет текста)");
-          console.log("messageType:", Object.keys(msg.message || {}));
-          console.log("==========================");
+          console.log("types:", Object.keys(msg.message || {}));
+          console.log("=================");
 
-          if (msg.key.fromMe) continue;
-          if (jid.endsWith("@g.us")) continue;
-          if (jid === "status@broadcast") continue;
-          if (!msg.message) continue;
-
-          // ✅ ГЛАВНОЕ ИСПРАВЛЕНИЕ: конвертируем LID в реальный номер
           let userId = jid;
 
           if (jid.endsWith("@lid")) {
-            // Способ 1: проверяем маппинг из contacts
             if (lidToJid[jid]) {
               userId = lidToJid[jid];
-              console.log("LID -> реальный номер (из маппинга):", userId);
-            }
-            // Способ 2: берём participant если есть
-            else if (msg.key.participant && msg.key.participant.endsWith("@s.whatsapp.net")) {
+              console.log("LID->номер (маппинг):", userId);
+            } else if (msg.key.participant && msg.key.participant.endsWith("@s.whatsapp.net")) {
               userId = msg.key.participant;
-              lidToJid[jid] = userId; // сохраняем на будущее
-              console.log("LID -> реальный номер (из participant):", userId);
-            }
-            // Способ 3: пробуем через waSocket.onWhatsApp
-            else {
-              try {
-                const results = await waSocket.onWhatsApp(jid);
-                if (results && results.length > 0 && results[0].jid) {
-                  userId = results[0].jid;
-                  lidToJid[jid] = userId;
-                  console.log("LID -> реальный номер (через onWhatsApp):", userId);
-                } else {
-                  // Способ 4: оставляем LID, попробуем отправить напрямую
-                  console.log("Не удалось конвертировать LID, используем как есть:", jid);
+              lidToJid[jid] = userId;
+              console.log("LID->номер (participant):", userId);
+            } else {
+              const lidNum = jid.replace("@lid", "");
+              if (/^\d+$/.test(lidNum)) {
+                const tryJid = lidNum + "@s.whatsapp.net";
+                try {
+                  const results = await waSocket.onWhatsApp(tryJid);
+                  if (results && results.length > 0 && results[0].exists) {
+                    userId = results[0].jid;
+                    lidToJid[jid] = userId;
+                    console.log("LID->номер (onWhatsApp):", userId);
+                  } else {
+                    userId = jid;
+                    console.log("Используем LID как есть:", userId);
+                  }
+                } catch (e) {
                   userId = jid;
+                  console.log("Ошибка onWhatsApp:", e.message);
                 }
-              } catch (e) {
-                console.log("Ошибка конвертации LID:", e.message, "используем как есть");
-                userId = jid;
               }
             }
           }
 
           console.log(">>> Обрабатываем от:", userId);
 
-          try {
-            await waSocket.readMessages([msg.key]);
-          } catch (e) {}
+          try { await waSocket.readMessages([msg.key]); } catch (e) {}
 
           if (msg.message?.imageMessage || msg.message?.documentMessage) {
             await handleReceiptPhoto({ channel: "wa", userId });
@@ -492,17 +450,16 @@ async function startWhatsApp() {
           }
         }
       } catch (err) {
-        console.error("Ошибка обработки WA сообщения:", err);
+        console.error("Ошибка WA сообщения:", err);
       }
     });
 
   } catch (err) {
-    console.error("Ошибка запуска WhatsApp:", err);
+    console.error("Ошибка запуска WA:", err);
     setTimeout(startWhatsApp, 5000);
   }
 }
 
-// ==================== ОБРАБОТКА СООБЩЕНИЙ ====================
 async function handleMessage({ channel, userId, text }) {
   try {
     const low = text.toLowerCase().trim();
@@ -511,13 +468,13 @@ async function handleMessage({ channel, userId, text }) {
     const s = sessions[userId];
     s.channel = channel;
 
-    console.log("handleMessage - userId:", userId, "step:", s.step, "text:", low);
+    console.log("handleMessage userId:", userId, "step:", s.step, "text:", low);
 
     if (confirmedBookings[userId]) {
       const cb  = confirmedBookings[userId];
       const grp = CONFIG.GROUPS[cb.group];
       return await sendMsg(channel, userId,
-        "У вас уже есть подтверждённая бронь! ✅\n\n"
+        "У вас есть подтверждённая бронь! ✅\n\n"
         + "Номер: " + cb.bookingId + "\n"
         + "Дата: " + formatDate(cb.date) + "\n"
         + "Время: " + grp.label + "\n\n"
@@ -536,13 +493,13 @@ async function handleMessage({ channel, userId, text }) {
 
     if (s.step === "wait_receipt") {
       return await sendMsg(channel, userId,
-        "📸 Ожидаем фото чека об оплате!\n\nОтправьте скриншот или фото перевода."
+        "📸 Ожидаем фото чека!\n\nОтправьте скриншот или фото перевода."
       );
     }
 
     if (s.step === "waiting_confirm") {
       return await sendMsg(channel, userId,
-        "Ваш чек получен! ✅\nОжидайте подтверждения оплаты от инструктора."
+        "Ваш чек получен! ✅\nОжидайте подтверждения от инструктора."
       );
     }
 
@@ -597,7 +554,7 @@ async function handleMessage({ channel, userId, text }) {
       + "Напишите:\n"
       + "• *Хочу забронировать* — для брони\n"
       + "• *Цены* — узнать стоимость\n\n"
-      + "По вопросам звоните: " + CONFIG.PHONE
+      + "По вопросам: " + CONFIG.PHONE
     );
 
   } catch (err) {
@@ -605,7 +562,6 @@ async function handleMessage({ channel, userId, text }) {
   }
 }
 
-// ==================== ШАГИ ДИАЛОГА ====================
 async function stepAskBook({ channel, userId, low, s }) {
   const yes = ["да","yes","конечно","ок","хорошо","давай","хочу","бронировать","забронировать"];
   const no  = ["нет","no","не надо","не хочу","отмена"];
@@ -643,9 +599,7 @@ async function stepAskBook({ channel, userId, low, s }) {
 async function stepCount({ channel, userId, low, s }) {
   const n = extractNumber(low);
   if (!n || n < 1 || n > CONFIG.CAPACITY) {
-    return await sendMsg(channel, userId,
-      "Пожалуйста введите число от 1 до " + CONFIG.CAPACITY
-    );
+    return await sendMsg(channel, userId, "Введите число от 1 до " + CONFIG.CAPACITY);
   }
   s.count = n;
   s.step  = "wait_date";
@@ -662,7 +616,7 @@ async function askDate(channel, userId) {
     + "• Сегодня — " + formatDate(formatISO(today)) + "\n"
     + "• Завтра — " + formatDate(formatISO(d1)) + "\n"
     + "• Послезавтра — " + formatDate(formatISO(d2)) + "\n\n"
-        + "Или напишите дату: 25.07"
+    + "Или напишите дату: 25.07"
   );
 }
 
@@ -676,7 +630,7 @@ async function stepDate({ channel, userId, low, s }) {
     );
   }
 
-  let date  = null;
+  let date = null;
   const today = new Date();
   today.setHours(0, 0, 0, 0);
 
@@ -699,9 +653,7 @@ async function stepDate({ channel, userId, low, s }) {
   const dateObj = new Date(date);
   dateObj.setHours(0, 0, 0, 0);
   if (dateObj < today) {
-    return await sendMsg(channel, userId,
-      "Эта дата уже прошла ❌\nВведите будущую дату."
-    );
+    return await sendMsg(channel, userId, "Эта дата уже прошла ❌\nВведите будущую дату.");
   }
 
   const free1 = CONFIG.CAPACITY - getBooked(date, "1");
@@ -709,7 +661,7 @@ async function stepDate({ channel, userId, low, s }) {
 
   if (free1 <= 0 && free2 <= 0) {
     const next = getNextAvailableDate(date);
-    if (next) {
+        (next) {
       return await sendMsg(channel, userId,
         "На " + formatDate(date) + " нет свободных досок 😔\n\n"
         + "Ближайшие места на " + formatDate(next) + "\n"
@@ -928,7 +880,7 @@ async function handleReceiptPhoto({ channel, userId }) {
   );
 }
 
-// ==================== ЗАПУСК СЕРВЕРА ====================
+// ==================== ЗАПУСК ====================
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, async () => {
   console.log("✅ Сервер запущен на порту " + PORT);
