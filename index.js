@@ -157,9 +157,7 @@ async function sendWA(userId, text) {
   try {
     if (!waSocket) { console.error("waSocket не готов!"); return; }
     const realJid = lidToJid[userId] || userId;
-    console.log("Отправляем ->", realJid, ":", text.substring(0, 50));
     await waSocket.sendMessage(realJid, { text: text });
-    console.log("Отправлено!");
   } catch (err) {
     console.error("WA send error:", err.message);
   }
@@ -221,9 +219,7 @@ app.get("/qr", async (req, res) => {
     + "<script>setTimeout(()=>location.reload(),25000)</script>"
     + "</body></html>"
   );
-});
-
-app.post("/tg_webhook", async (req, res) => {
+});app.post("/tg_webhook", async (req, res) => {
   try {
     const msg = req.body.message;
     if (!msg || !msg.text) return res.sendStatus(200);
@@ -399,9 +395,7 @@ async function startWhatsApp() {
 
           console.log("=== СООБЩЕНИЕ ===");
           console.log("jid:", jid);
-          console.log("participant:", msg.key.participant || "нет");
           console.log("text:", text || "(нет текста)");
-          console.log("types:", Object.keys(msg.message || {}));
           console.log("=================");
 
           let userId = jid;
@@ -409,11 +403,9 @@ async function startWhatsApp() {
           if (jid.endsWith("@lid")) {
             if (lidToJid[jid]) {
               userId = lidToJid[jid];
-              console.log("LID->номер (маппинг):", userId);
             } else if (msg.key.participant && msg.key.participant.endsWith("@s.whatsapp.net")) {
               userId = msg.key.participant;
               lidToJid[jid] = userId;
-              console.log("LID->номер (participant):", userId);
             } else {
               const lidNum = jid.replace("@lid", "");
               if (/^\d+$/.test(lidNum)) {
@@ -423,14 +415,11 @@ async function startWhatsApp() {
                   if (results && results.length > 0 && results[0].exists) {
                     userId = results[0].jid;
                     lidToJid[jid] = userId;
-                    console.log("LID->номер (onWhatsApp):", userId);
                   } else {
                     userId = jid;
-                    console.log("Используем LID как есть:", userId);
                   }
                 } catch (e) {
                   userId = jid;
-                  console.log("Ошибка onWhatsApp:", e.message);
                 }
               }
             }
@@ -661,11 +650,16 @@ async function stepDate({ channel, userId, low, s }) {
 
   if (free1 <= 0 && free2 <= 0) {
     const next = getNextAvailableDate(date);
-        (next) {
+    if (next) {
+      s.date = next;
+      s.step = "wait_group";
       return await sendMsg(channel, userId,
         "На " + formatDate(date) + " нет свободных досок 😔\n\n"
-        + "Ближайшие места на " + formatDate(next) + "\n"
-        + "Забронировать на эту дату?"
+        + "Ближайшая дата: " + formatDate(next) + "\n\n"
+        + "Выберите время:\n"
+        + "1️⃣ — с 4:00 до 5:00\n"
+        + "2️⃣ — с 5:00 до 6:00\n\n"
+        + "Напишите 1 или 2"
       );
     }
     return await sendMsg(channel, userId,
@@ -695,9 +689,7 @@ async function stepDate({ channel, userId, low, s }) {
     + show2 + "\n\n"
     + "Напишите 1 или 2"
   );
-}
-
-async function stepGroup({ channel, userId, low, s }) {
+}async function stepGroup({ channel, userId, low, s }) {
   let group = null;
   if (low === "1" || low.includes("первую") || low.includes("первая") || low.includes("4:00")) group = "1";
   if (low === "2" || low.includes("вторую") || low.includes("вторая") || low.includes("5:00")) group = "2";
@@ -880,7 +872,6 @@ async function handleReceiptPhoto({ channel, userId }) {
   );
 }
 
-// ==================== ЗАПУСК ====================
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, async () => {
   console.log("✅ Сервер запущен на порту " + PORT);
