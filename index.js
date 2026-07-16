@@ -38,6 +38,7 @@ const sessions          = {};
 const pendingPayments   = {};
 const sessionTimers     = {};
 const confirmedBookings = {};
+const lidToJid          = {}; // ✅ маппинг LID -> реальный номер
 let   lastQR            = null;
 let   waSocket          = null;
 
@@ -164,8 +165,12 @@ async function sendWA(userId, text) {
       console.error("waSocket не готов!");
       return;
     }
-    console.log("Отправляем сообщение ->", userId, ":", text.substring(0, 50));
-    await waSocket.sendMessage(userId, { text: text });
+
+    // ✅ Если в хранилище есть реальный JID для этого LID — используем его
+    const realJid = lidToJid[userId] || userId;
+
+    console.log("Отправляем сообщение ->", realJid, ":", text.substring(0, 50));
+    await waSocket.sendMessage(realJid, { text: text });
     console.log("Сообщение отправлено!");
   } catch (err) {
     console.error("WA send error:", err.message);
@@ -389,19 +394,35 @@ async function startWhatsApp() {
 
     waSocket.ev.on("creds.update", saveCreds);
 
+    // ✅ Сохраняем маппинг контактов LID -> реальный номер
+    waSocket.ev.on("contacts.update", (contacts) => {
+      for (const contact of contacts) {
+        if (contact.id && contact.lid) {
+          lidToJid[contact.lid] = contact.id;
+          console.log("Контакт сохранён:", contact.lid, "->", contact.id);
+        }
+      }
+    });
+
+    waSocket.ev.on("contacts.upsert", (contacts) => {
+      for (const contact of contacts) {
+        if (contact.id && contact.lid) {
+          lidToJid[contact.lid] = contact.id;
+          console.log("Контакт добавлен:", contact.lid, "->", contact.id);
+        }
+      }
+    });
+
     waSocket.ev.on("messages.upsert", async (m) => {
       try {
-        // Только новые входящие сообщения
         if (m.type !== "notify") return;
         if (!m.messages) return;
 
         for (const msg of m.messages) {
           const jid = msg.key.remoteJid || "";
 
-          // Пропускаем stub сообщения (системные)
           if (msg.messageStubType) continue;
 
-          // Достаём текст
           const text =
             msg.message?.conversation ||
             msg.message?.extendedTextMessage?.text ||
@@ -410,40 +431,62 @@ async function startWhatsApp() {
           console.log("=== ВХОДЯЩЕЕ СООБЩЕНИЕ ===");
           console.log("fromMe:", msg.key.fromMe);
           console.log("jid:", jid);
+          console.log("participant:", msg.key.participant || "нет");
           console.log("text:", text || "(нет текста)");
           console.log("messageType:", Object.keys(msg.message || {}));
           console.log("==========================");
 
-          // Пропускаем свои сообщения
           if (msg.key.fromMe) continue;
-
-          // Пропускаем группы
           if (jid.endsWith("@g.us")) continue;
-
-          // Пропускаем статусы
           if (jid === "status@broadcast") continue;
-
-          // Пропускаем пустые сообщения
           if (!msg.message) continue;
 
-          const userId = jid;
+          // ✅ ГЛАВНОЕ ИСПРАВЛЕНИЕ: конвертируем LID в реальный номер
+          let userId = jid;
 
-          // Отмечаем как прочитанное
-          try {
-            await waSocket.readMessages([msg.key]);
-          } catch (e) {
-            // Игнорируем ошибки readMessages
+          if (jid.endsWith("@lid")) {
+            // Способ 1: проверяем маппинг из contacts
+            if (lidToJid[jid]) {
+              userId = lidToJid[jid];
+              console.log("LID -> реальный номер (из маппинга):", userId);
+            }
+            // Способ 2: берём participant если есть
+            else if (msg.key.participant && msg.key.participant.endsWith("@s.whatsapp.net")) {
+              userId = msg.key.participant;
+              lidToJid[jid] = userId; // сохраняем на будущее
+              console.log("LID -> реальный номер (из participant):", userId);
+            }
+            // Способ 3: пробуем через waSocket.onWhatsApp
+            else {
+              try {
+                const results = await waSocket.onWhatsApp(jid);
+                if (results && results.length > 0 && results[0].jid) {
+                  userId = results[0].jid;
+                  lidToJid[jid] = userId;
+                  console.log("LID -> реальный номер (через onWhatsApp):", userId);
+                } else {
+                  // Способ 4: оставляем LID, попробуем отправить напрямую
+                  console.log("Не удалось конвертировать LID, используем как есть:", jid);
+                  userId = jid;
+                }
+              } catch (e) {
+                console.log("Ошибка конвертации LID:", e.message, "используем как есть");
+                userId = jid;
+              }
+            }
           }
 
           console.log(">>> Обрабатываем от:", userId);
 
-          // Фото чека
+          try {
+            await waSocket.readMessages([msg.key]);
+          } catch (e) {}
+
           if (msg.message?.imageMessage || msg.message?.documentMessage) {
             await handleReceiptPhoto({ channel: "wa", userId });
             continue;
           }
 
-          // Текстовое сообщение
           if (text && text.trim().length > 0) {
             await handleMessage({ channel: "wa", userId, text: text.trim() });
           }
@@ -470,7 +513,6 @@ async function handleMessage({ channel, userId, text }) {
 
     console.log("handleMessage - userId:", userId, "step:", s.step, "text:", low);
 
-    // Если есть подтверждённая бронь
     if (confirmedBookings[userId]) {
       const cb  = confirmedBookings[userId];
       const grp = CONFIG.GROUPS[cb.group];
@@ -483,10 +525,8 @@ async function handleMessage({ channel, userId, text }) {
       );
     }
 
-    // Сбрасываем таймер при каждом сообщении
     resetTimer(userId);
 
-    // Обрабатываем шаги сессии
     if (s.step === "wait_count")    return await stepCount({ channel, userId, low, s });
     if (s.step === "wait_date")     return await stepDate({ channel, userId, low, s });
     if (s.step === "wait_group")    return await stepGroup({ channel, userId, low, s });
@@ -506,16 +546,13 @@ async function handleMessage({ channel, userId, text }) {
       );
     }
 
-    // Если это ответ на приветствие — молчим
     const isGreetingReply = GREETING_REPLIES.some(w => low.includes(w));
     if (isGreetingReply) return;
 
-    // Проверяем слова
-    const hasSap   = SAP_WORDS.some(w => low.includes(w));
-    const hasPrice = PRICE_WORDS.some(w => low.includes(w));
+    const hasSap     = SAP_WORDS.some(w => low.includes(w));
+    const hasPrice   = PRICE_WORDS.some(w => low.includes(w));
     const greetMatch = GREETINGS.find(g => g.triggers.some(t => low.includes(t)));
 
-    // Приветствие
     if (greetMatch) {
       s.step = "idle";
       if (hasSap || hasPrice) {
@@ -534,7 +571,6 @@ async function handleMessage({ channel, userId, text }) {
       return await sendMsg(channel, userId, greetMatch.response);
     }
 
-    // Только цены
     if (hasPrice && !hasSap) {
       s.step = "ask_book";
       return await sendMsg(channel, userId,
@@ -542,7 +578,6 @@ async function handleMessage({ channel, userId, text }) {
       );
     }
 
-    // Сап слова — начинаем бронирование
     if (hasSap || hasPrice) {
       const count = extractNumber(low);
       if (count) {
@@ -556,7 +591,6 @@ async function handleMessage({ channel, userId, text }) {
       );
     }
 
-    // Ничего не подошло — показываем помощь
     return await sendMsg(channel, userId,
       "Привет! 👋\n\n"
       + "Я помогаю с арендой сапбордов 🏄\n\n"
@@ -591,9 +625,7 @@ async function stepAskBook({ channel, userId, low, s }) {
 
   if (no.some(w => low.includes(w))) {
     s.step = "idle";
-    return await sendMsg(channel, userId,
-      "Хорошо! Если понадобится — пишите 😊"
-    );
+    return await sendMsg(channel, userId, "Хорошо! Если понадобится — пишите 😊");
   }
 
   const count = extractNumber(low);
@@ -630,7 +662,7 @@ async function askDate(channel, userId) {
     + "• Сегодня — " + formatDate(formatISO(today)) + "\n"
     + "• Завтра — " + formatDate(formatISO(d1)) + "\n"
     + "• Послезавтра — " + formatDate(formatISO(d2)) + "\n\n"
-    + "Или напишите дату: 25.07"
+        + "Или напишите дату: 25.07"
   );
 }
 
@@ -672,7 +704,8 @@ async function stepDate({ channel, userId, low, s }) {
     );
   }
 
-  const free1 = CONFIG.CAPACITY - getBooked(date, "1");  const free2 = CONFIG.CAPACITY - getBooked(date, "2");
+  const free1 = CONFIG.CAPACITY - getBooked(date, "1");
+  const free2 = CONFIG.CAPACITY - getBooked(date, "2");
 
   if (free1 <= 0 && free2 <= 0) {
     const next = getNextAvailableDate(date);
@@ -763,9 +796,9 @@ async function stepGroup({ channel, userId, low, s }) {
 
 async function stepDuration({ channel, userId, low, s }) {
   let duration = null;
-  if (low === "1" || low.includes("1 час") || low.includes("один час"))   duration = "1";
-  if (low === "2" || low.includes("1.5")   || low.includes("полтора"))    duration = "1.5";
-  if (low === "3" || low.includes("2 часа") || low.includes("два часа"))  duration = "2";
+  if (low === "1" || low.includes("1 час") || low.includes("один час"))  duration = "1";
+  if (low === "2" || low.includes("1.5")   || low.includes("полтора"))   duration = "1.5";
+  if (low === "3" || low.includes("2 часа") || low.includes("два часа")) duration = "2";
 
   if (!duration) {
     return await sendMsg(channel, userId,
@@ -782,11 +815,11 @@ async function stepDuration({ channel, userId, low, s }) {
 
   return await sendMsg(channel, userId,
     "📋 Ваш заказ:\n\n"
-    + "📅 Дата: "     + formatDate(s.date) + "\n"
-    + "⏰ Время: "    + grp.label + "\n"
-    + "🏄 Досок: "    + s.count + "\n"
-    + "⏱ Длит: "     + info.label + "\n"
-    + "💰 Итого: "    + s.total + " руб\n\n"
+    + "📅 Дата: "  + formatDate(s.date) + "\n"
+    + "⏰ Время: " + grp.label + "\n"
+    + "🏄 Досок: " + s.count + "\n"
+    + "⏱ Длит: "  + info.label + "\n"
+    + "💰 Итого: " + s.total + " руб\n\n"
     + "📌 Условия:\n"
     + "• При неявке оплата не возвращается\n"
     + "• При плохой погоде — перенос или возврат\n\n"
@@ -824,12 +857,12 @@ async function stepConfirm({ channel, userId, low, s }) {
 
     await notifyTelegram(
       "🆕 НОВАЯ БРОНЬ!\n\n"
-      + "ID: "     + bookingId + "\n"
-      + "Дата: "   + formatDate(s.date) + "\n"
-      + "Время: "  + grp.label + "\n"
-      + "Досок: "  + s.count + "\n"
-      + "Длит: "   + info.label + "\n"
-      + "Сумма: "  + s.total + " руб\n\n"
+      + "ID: "    + bookingId + "\n"
+      + "Дата: "  + formatDate(s.date) + "\n"
+      + "Время: " + grp.label + "\n"
+      + "Досок: " + s.count + "\n"
+      + "Длит: "  + info.label + "\n"
+      + "Сумма: " + s.total + " руб\n\n"
       + "✅ /confirm_" + bookingId + "\n"
       + "❌ /cancel_"  + bookingId
     );
@@ -854,9 +887,7 @@ async function stepConfirm({ channel, userId, low, s }) {
     );
   }
 
-  return await sendMsg(channel, userId,
-    "Ответьте: *Да* или *Нет*"
-  );
+  return await sendMsg(channel, userId, "Ответьте: *Да* или *Нет*");
 }
 
 async function handleReceiptPhoto({ channel, userId }) {
